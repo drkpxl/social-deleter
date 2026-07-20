@@ -20,18 +20,15 @@ export class AbortError extends Error {
 /**
  * Randomized action delays + exponential backoff for one run.
  *
- * Abort model: a signal may be supplied at construction (applies to every
- * sleep) and/or per call (takes precedence for that call). When the signal
- * fires, the pending sleep rejects with an AbortError so Stop never waits out
- * a delay.
+ * Abort model: the signal is per call — the caller owns a fresh AbortController
+ * per run, so a signal held by the engine would go stale after the first Stop.
+ * When the signal fires, the pending sleep rejects with an AbortError so Stop
+ * never waits out a delay.
  */
 export class PacingEngine {
   private attempt = 0;
 
-  constructor(
-    private readonly profile: PacingProfile,
-    private readonly signal?: AbortSignal,
-  ) {}
+  constructor(private readonly profile: PacingProfile) {}
 
   /** Random delay uniform in [minDelayMs, maxDelayMs]. */
   delay(signal?: AbortSignal): Promise<void> {
@@ -54,8 +51,7 @@ export class PacingEngine {
     this.attempt = 0;
   }
 
-  private sleep(ms: number, perCall?: AbortSignal): Promise<void> {
-    const signal = perCall ?? this.signal;
+  private sleep(ms: number, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) {
         reject(new AbortError());

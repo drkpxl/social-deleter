@@ -61,7 +61,6 @@ export interface PrimitiveResult {
 
 /** RPC surface implemented by every site content script. */
 export interface DomPrimitives {
-  ping(): Promise<'pong'>;
   scroll(args: { direction: 'down' | 'up'; amountPx?: number }): Promise<{ scrolledPx: number; atEnd: boolean }>;
   /**
    * `probes` classify each matched node (name → selector evaluated within it).

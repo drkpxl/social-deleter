@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { RPC_UNREACHABLE_PREFIX, messageOf } from './errors';
 import type { DomPrimitives, RpcRequest, RpcResponse } from './types';
 
 let nextId = 1;
@@ -32,36 +33,36 @@ export function createRpcClient(tabId: number): DomPrimitives {
 
   const call = async (method: keyof DomPrimitives, args?: unknown): Promise<unknown> => {
     const request: RpcRequest = { id: nextId++, method, args };
-    let response: RpcResponse | undefined;
+    const unreachable = (why: string) =>
+      new Error(`${RPC_UNREACHABLE_PREFIX} ${method} on tab ${tabId} — ${why}`);
+
+    const settle = (response: RpcResponse): unknown => {
+      if (response.ok) return response.result;
+      throw new Error(response.error);
+    };
+
+    let first: RpcResponse | undefined;
     let failure = '';
     try {
-      response = await send(request);
-      if (!response) failure = 'no response from content script';
+      first = await send(request);
+      if (!first) failure = 'no response from content script';
     } catch (err) {
-      failure = err instanceof Error ? err.message : String(err);
+      failure = messageOf(err);
     }
+    // Settle outside the try: a legitimate error response is an answer, not a
+    // missing content script, and must never trigger the inject-and-retry path.
+    if (first) return settle(first);
 
     // No listener on the other end: the script is missing, not the tab. Inject and retry once.
-    if (failure) {
-      if (!(await injectContentScript(tabId))) {
-        throw new Error(`RPC_UNREACHABLE: ${method} on tab ${tabId} — ${failure}`);
-      }
-      try {
-        response = await send({ ...request, id: nextId++ });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        throw new Error(`RPC_UNREACHABLE: ${method} on tab ${tabId} — ${message}`);
-      }
-      if (!response) {
-        throw new Error(`RPC_UNREACHABLE: ${method} on tab ${tabId} — no response after injection`);
-      }
+    if (!(await injectContentScript(tabId))) throw unreachable(failure);
+    let retried: RpcResponse | undefined;
+    try {
+      retried = await send({ ...request, id: nextId++ });
+    } catch (err) {
+      throw unreachable(messageOf(err));
     }
-
-    if (!response) {
-      throw new Error(`RPC_UNREACHABLE: ${method} on tab ${tabId} — no response from content script`);
-    }
-    if (response.ok) return response.result;
-    throw new Error(response.error);
+    if (!retried) throw unreachable('no response after injection');
+    return settle(retried);
   };
 
   return new Proxy({} as DomPrimitives, {
@@ -82,10 +83,6 @@ export function serveRpc(impl: DomPrimitives): void {
     return (fn as (args?: unknown) => Promise<unknown>)
       .call(impl, message.args)
       .then((result): RpcResponse => ({ id, ok: true, result }))
-      .catch((err: unknown): RpcResponse => ({
-        id,
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      }));
+      .catch((err: unknown): RpcResponse => ({ id, ok: false, error: messageOf(err) }));
   });
 }

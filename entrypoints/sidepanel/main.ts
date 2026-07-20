@@ -12,6 +12,7 @@ import { createLlmClient, loadLlmConfig, saveLlmConfig } from '@/src/llm-client'
 import { DEFAULT_BLUESKY_PACING, PacingEngine } from '@/src/pacing';
 import { RunController } from '@/src/run-controller';
 import { newRunId } from '@/src/run-id';
+import { collectDiagnostics } from '@/src/diagnostics';
 import type { Category, DateFilter, LlmClient, RunConfig, RunEvent, RunStatus } from '@/src/types';
 
 /** v1 is Bluesky-only; the active tab must be on this host to run. */
@@ -77,6 +78,15 @@ const TEMPLATE = `
       <button type="button" id="llm-test" class="btn">Test</button>
     </div>
     <p id="llm-status" class="hint"></p>
+  </details>
+
+  <details class="llm">
+    <summary>Diagnostics</summary>
+    <small>Dumps what each selector matches on this page, plus a real DOM sample — paste it into a bug report when something finds nothing.</small>
+    <div class="llm-actions">
+      <button type="button" id="btn-diagnose" class="btn">Copy selector report</button>
+    </div>
+    <p id="diag-status" class="hint"></p>
   </details>
 `;
 
@@ -232,6 +242,30 @@ async function onResume(): Promise<void> {
   if (!activeTab?.supported || selectedCategories().length === 0) return;
   // resume() reuses the latest incomplete runId and rebuilds the skip-set from the log.
   launch(controller.resume(baseConfig(activeTab)));
+}
+
+/** Dump what the shipped selectors actually match here, for pasting into a bug report. */
+async function onDiagnose(): Promise<void> {
+  const note = el('diag-status');
+  await resolveActiveTab();
+  if (!activeTab?.supported) {
+    note.textContent = 'Open your bsky.app profile tab first.';
+    return;
+  }
+  note.textContent = 'Collecting…';
+  try {
+    const report = await collectDiagnostics(activeTab.id);
+    console.log(report);
+    try {
+      await navigator.clipboard.writeText(report);
+      note.textContent = 'Copied to clipboard (also logged to this panel’s console).';
+    } catch {
+      // Clipboard needs focus/permission; the console copy is always available.
+      note.textContent = 'Logged to this panel’s console — right-click the panel → Inspect to copy.';
+    }
+  } catch (err) {
+    note.textContent = `Diagnostics failed: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -427,6 +461,7 @@ function wireEvents(): void {
 
   el('llm-save').addEventListener('click', () => void onLlmSave());
   el('llm-test').addEventListener('click', () => void onLlmTest());
+  el('btn-diagnose').addEventListener('click', () => void onDiagnose());
 
   // The panel outlives tab switches; keep the target-tab warning honest.
   const retarget = () => void resolveActiveTab().then(render);

@@ -23,6 +23,7 @@ import { selectorMap } from '../selector-map';
 import { signatureOf } from '../deletion-log';
 import { navigateTab } from '../navigation';
 import { DEFAULT_BLUESKY_PACING } from '../pacing';
+import { messageOf } from '../errors';
 
 const SITE: Site = 'bluesky';
 
@@ -90,10 +91,6 @@ export function handleFromUrl(url: string): string | undefined {
 
 export function routeFor(category: Category, handle: string): string {
   return `https://bsky.app/profile/${handle}${ROUTE_SUFFIX[category]}`;
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 function toItem(category: Category, node: NodeInfo): Item {

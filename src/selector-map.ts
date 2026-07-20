@@ -38,9 +38,33 @@ function requireShipped(site: Site): SelectorMapData {
 }
 
 export class SelectorMap implements SelectorResolver {
+  /**
+   * In-memory copy of the stored override per site. This panel context is the
+   * only writer, so the cache is authoritative between writes; the
+   * storage.onChanged subscription below only covers a second panel instance.
+   * `undefined` value = cached absence, missing key = not yet read.
+   */
+  private readonly cache = new Map<Site, SelectorMapData | undefined>();
+  private watching = false;
+
+  private watchStorage(): void {
+    if (this.watching) return;
+    this.watching = true;
+    browser.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') return;
+      for (const site of [...this.cache.keys()]) {
+        if (overrideKey(site) in changes) this.cache.delete(site);
+      }
+    });
+  }
+
   private async readOverride(site: Site): Promise<SelectorMapData | undefined> {
+    this.watchStorage();
+    if (this.cache.has(site)) return this.cache.get(site);
     const stored = await browser.storage.local.get(overrideKey(site));
-    return stored[overrideKey(site)] as SelectorMapData | undefined;
+    const override = stored[overrideKey(site)] as SelectorMapData | undefined;
+    this.cache.set(site, override);
+    return override;
   }
 
   async get(site: Site, key: string): Promise<string> {
@@ -72,6 +96,7 @@ export class SelectorMap implements SelectorResolver {
       selectors: { ...base, [key]: selector },
     };
     await browser.storage.local.set({ [overrideKey(site)]: next });
+    this.cache.set(site, next);
   }
 
   /** Drop overrides whose schemaVersion no longer matches shipped. Returns whether a discard happened. */
@@ -80,6 +105,7 @@ export class SelectorMap implements SelectorResolver {
     const override = await this.readOverride(site);
     if (override && override.schemaVersion !== shipped.schemaVersion) {
       await browser.storage.local.remove(overrideKey(site));
+      this.cache.set(site, undefined);
       return true;
     }
     return false;

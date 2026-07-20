@@ -85,10 +85,6 @@ function runProbes(node: Element, probes: Record<string, string>): Record<string
 
 export function createDomPrimitives(): DomPrimitives {
   return {
-    async ping() {
-      return 'pong';
-    },
-
     async scroll({ direction, amountPx }) {
       const amount = amountPx ?? Math.round(window.innerHeight * 0.9);
       const before = window.scrollY;
@@ -153,9 +149,10 @@ export function createDomPrimitives(): DomPrimitives {
     },
 
     async domSnapshot({ selector, maxChars }) {
-      const target = selector ? document.querySelector(selector) : document.body;
-      const root = target ?? document.body;
-      const context = selector && root.parentElement ? root.parentElement : root;
+      // Snapshot the matched element's parent (siblings give the LLM context);
+      // with no selector — or nothing matched — fall back to the whole body.
+      const matched = selector ? document.querySelector(selector) : null;
+      const context = matched?.parentElement ?? document.body;
       const clone = context.cloneNode(true) as Element;
       clone.querySelectorAll('script, style, svg').forEach((n) => {
         n.textContent = '';

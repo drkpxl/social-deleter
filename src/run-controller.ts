@@ -12,11 +12,11 @@
 import { createRpcClient } from './rpc';
 import { selectorMap } from './selector-map';
 import { SelectorMissingError } from './selector-map';
-import { AbortError } from './pacing';
+import { AbortError, PacingEngine } from './pacing';
 import { signatureOf } from './deletion-log';
 import { newRunId } from './run-id';
+import { RPC_UNREACHABLE_PREFIX, messageOf } from './errors';
 import type { DeletionLog } from './deletion-log';
-import type { PacingEngine } from './pacing';
 import type {
   Category,
   DeleteResult,
@@ -34,7 +34,8 @@ import type {
 export interface RunControllerDeps {
   adapterFactory: (tabId: number) => SiteAdapter;
   log: DeletionLog;
-  pacing: PacingEngine;
+  /** Optional override (tests); by default each run builds one from the adapter's profile. */
+  pacing?: PacingEngine;
   /** Optional; when absent, any heal/triage decision degrades to pause-and-notify. */
   llm?: LlmClient;
 }
@@ -90,6 +91,12 @@ interface CategoryOutcome {
 
 type Suspicion = 'empty' | 'all-skipped';
 
+/**
+ * What deleteWithRecovery can hand back: every `failed` path either recovers,
+ * throws a signal, or pauses, so the caller's branches exhaust by construction.
+ */
+type SettledDelete = Exclude<DeleteResult, { status: 'failed' }>;
+
 function newOutcome(): CategoryOutcome {
   return { enumerated: 0, deleted: 0, skippedAlreadyLogged: 0, skippedByAdapter: 0 };
 }
@@ -127,12 +134,8 @@ class StopSignal {
   constructor(readonly reason = 'stopped by user') {}
 }
 
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 function isRpcUnreachable(err: unknown): boolean {
-  return messageOf(err).startsWith('RPC_UNREACHABLE:');
+  return messageOf(err).startsWith(RPC_UNREACHABLE_PREFIX);
 }
 
 /** A `failed` DeleteResult whose reason points at a broken selector / vanished element. */
@@ -167,6 +170,7 @@ export class RunController {
   private runId!: string;
   private adapter!: SiteAdapter;
   private rpc!: DomPrimitives;
+  private pacing!: PacingEngine;
   private skipSet = new Set<string>();
   private deleted = 0;
   private stopRequested = false;
@@ -217,10 +221,13 @@ export class RunController {
     this.site = config.site;
     this.runId = config.runId;
     this.adapter = this.deps.adapterFactory(config.tabId);
+    // The adapter's profile is authoritative — a site-specific one must not be
+    // silently replaced by whoever constructed the controller.
+    this.pacing = this.deps.pacing ?? new PacingEngine(this.adapter.pacing);
     this.rpc = createRpcClient(config.tabId);
     this.stopRequested = false;
     this.abortController = new AbortController();
-    this.deps.pacing.resetBackoff();
+    this.pacing.resetBackoff();
 
     try {
       // Resume checkpoint: rebuild the skip-set from what this runId already logged.
@@ -253,20 +260,25 @@ export class RunController {
 
   /** Turn a loop-ending throw into the right terminal status + event. Never rethrows. */
   private async handleTerminal(err: unknown): Promise<void> {
-    if (err instanceof StopSignal) {
-      this.setStatus({ state: 'paused', runId: this.runId, reason: err.reason, deleted: this.deleted });
-      await this.emitEvent('stopped', err.reason);
-      return;
-    }
-    if (err instanceof PauseSignal) {
-      this.setStatus({ state: 'paused', runId: this.runId, reason: err.reason, deleted: this.deleted });
-      await this.emitEvent('paused', err.reason);
-      return;
-    }
-    // Unexpected: pause (resumable) and record it so the user sees why.
-    const reason = messageOf(err);
+    // Every arm is a resumable pause; only the recorded event kind differs.
+    const [kind, reason]: [RunEvent['kind'], string] =
+      err instanceof StopSignal
+        ? ['stopped', err.reason]
+        : err instanceof PauseSignal
+          ? ['paused', err.reason]
+          : ['error', messageOf(err)];
     this.setStatus({ state: 'paused', runId: this.runId, reason, deleted: this.deleted });
-    await this.emitEvent('error', reason);
+    await this.emitEvent(kind, reason);
+  }
+
+  /**
+   * The pause-don't-crash invariant, in one place: control-flow signals pass
+   * through untouched and a dead tab becomes a resumable pause. Every catch in
+   * the run loop opens with this; what it does with anything else is its own call.
+   */
+  private rethrowControlFlow(err: unknown): void {
+    if (err instanceof StopSignal || err instanceof PauseSignal) throw err;
+    if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
   }
 
   /**
@@ -288,8 +300,7 @@ export class RunController {
         }
         break;
       } catch (err) {
-        if (err instanceof StopSignal || err instanceof PauseSignal) throw err;
-        if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
+        this.rethrowControlFlow(err);
         if (err instanceof SelectorMissingError && !enumHealed) {
           if (!(await this.tryHeal(err.key))) {
             throw new PauseSignal(`selector repair unavailable: ${err.message}`);
@@ -339,12 +350,11 @@ export class RunController {
       outcome.skippedAlreadyLogged++;
       return; // already deleted/gone under this runId
     }
-    if (this.stopRequested) throw new StopSignal();
 
     // Guard against a modal/banner blocking the delete before we spend a delay on it.
     await this.ensureClearState();
 
-    await this.paced(() => this.deps.pacing.delay(this.abortSignal));
+    await this.paced(() => this.pacing.delay(this.abortSignal));
 
     const result = await this.deleteWithRecovery(item, false);
     this.applyResult(item, sig, result, cat, outcome);
@@ -353,7 +363,7 @@ export class RunController {
   private applyResult(
     item: Item,
     sig: string,
-    result: DeleteResult,
+    result: SettledDelete,
     cat: Category,
     outcome: CategoryOutcome,
   ): void {
@@ -361,7 +371,7 @@ export class RunController {
       this.deleted++;
       outcome.deleted++;
       this.skipSet.add(sig);
-      this.deps.pacing.resetBackoff();
+      this.pacing.resetBackoff();
       void this.deps.log.append({
         runId: this.runId,
         site: this.site,
@@ -373,15 +383,10 @@ export class RunController {
       this.emitRunning(cat);
       return;
     }
-    if (result.status === 'skipped') {
-      // The DOM offered no control: item already gone, or the selector broke.
-      // Indistinguishable here — reviewOutcome decides once the category ends.
-      outcome.skippedByAdapter++;
-      this.skipSet.add(sig);
-      return;
-    }
-    // Should not reach here: deleteWithRecovery converts failures to success or a signal.
-    throw new PauseSignal(`delete failed: ${result.reason}`);
+    // The DOM offered no control: item already gone, or the selector broke.
+    // Indistinguishable here — reviewOutcome decides once the category ends.
+    outcome.skippedByAdapter++;
+    this.skipSet.add(sig);
   }
 
   /**
@@ -389,13 +394,12 @@ export class RunController {
    * blocking state (triage + retry). A second failure, or no recovery path,
    * pauses. RPC_UNREACHABLE anywhere pauses with the tab-gone reason.
    */
-  private async deleteWithRecovery(item: Item, retried: boolean): Promise<DeleteResult> {
+  private async deleteWithRecovery(item: Item, retried: boolean): Promise<SettledDelete> {
     let result: DeleteResult;
     try {
       result = await this.adapter.deleteItem(item);
     } catch (err) {
-      if (err instanceof StopSignal || err instanceof PauseSignal) throw err;
-      if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
+      this.rethrowControlFlow(err);
       if (err instanceof SelectorMissingError) {
         if (retried) throw new PauseSignal(`selector repair failed: ${err.message}`);
         if (!(await this.tryHeal(err.key, item))) {
@@ -418,7 +422,7 @@ export class RunController {
     }
 
     // Non-selector failure — maybe an unexpected state blocked it. Triage, then retry once.
-    await this.ensureClearState(true);
+    await this.ensureClearState();
     return this.deleteWithRecovery(item, true);
   }
 
@@ -445,7 +449,7 @@ export class RunController {
       const snap = await this.rpc.domSnapshot({ selector: item?.elementKey, maxChars: SNAPSHOT_MAX_CHARS });
       snapshotHtml = snap.html;
     } catch (err) {
-      if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
+      this.rethrowControlFlow(err);
       return false;
     }
 
@@ -461,7 +465,7 @@ export class RunController {
     try {
       nodes = await this.rpc.queryItems({ selector: proposal });
     } catch (err) {
-      if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
+      this.rethrowControlFlow(err);
       return false;
     }
     if (nodes.length === 0) return false;
@@ -477,13 +481,13 @@ export class RunController {
    * dismiss (close & re-check), backoff (wait & re-check), pause_for_human
    * (pause), abort (stop). No LLM → pause. Persistent block → pause.
    */
-  private async ensureClearState(_afterFailure = false): Promise<void> {
+  private async ensureClearState(): Promise<void> {
     for (let round = 0; round < MAX_TRIAGE_ROUNDS; round++) {
       let state;
       try {
         state = await this.rpc.readState();
       } catch (err) {
-        if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
+        this.rethrowControlFlow(err);
         throw new PauseSignal(messageOf(err));
       }
       if (!state.modalPresent && !state.bannerText) return; // clear
@@ -497,7 +501,7 @@ export class RunController {
         continue;
       }
       if (action === 'backoff') {
-        await this.paced(() => this.deps.pacing.backoff(this.abortSignal));
+        await this.paced(() => this.pacing.backoff(this.abortSignal));
         continue;
       }
       if (action === 'pause_for_human') {
@@ -516,16 +520,16 @@ export class RunController {
         const nodes = await this.rpc.queryItems({ selector });
         if (nodes.length > 0) {
           await this.rpc.clickDelete({ menuItemSelector: selector });
-          await this.paced(() => this.deps.pacing.delay(this.abortSignal));
+          await this.paced(() => this.pacing.delay(this.abortSignal));
           return;
         }
       } catch (err) {
-        if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
+        this.rethrowControlFlow(err);
         // ignore a single bad close selector; try the next
       }
     }
     // Nothing to click — wait a beat; the next state read decides whether it cleared.
-    await this.paced(() => this.deps.pacing.delay(this.abortSignal));
+    await this.paced(() => this.pacing.delay(this.abortSignal));
   }
 
   /** Run a pacing sleep, translating an aborted sleep (Stop) into a StopSignal. */

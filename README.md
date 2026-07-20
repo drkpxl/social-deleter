@@ -10,20 +10,26 @@ It runs entirely on your machine. There is no server, no account, no data collec
 
 ## Install (for everyone — no coding needed)
 
-Chrome doesn't list automation tools like this in its Web Store, so you install it directly. It takes about two minutes.
+Works in **Chrome, Vivaldi, Brave, and Edge** — they all share the same engine, so one download covers them. These stores don't list automation tools like this, so you install it directly. It takes about two minutes.
 
 1. **Download it.** On the [Releases page](https://github.com/drkpxl/social-deleter/releases), click the latest `social-deleter-*.zip` under **Assets**.
-2. **Unzip it.** Double-click the downloaded file. You'll get a folder — move it somewhere you won't delete by accident (e.g. your Documents folder). Chrome loads it from this folder every time, so it needs to stay put.
-3. **Open the extensions page.** In Chrome, go to `chrome://extensions` (type it in the address bar).
-4. **Turn on Developer mode.** Toggle the switch in the **top-right corner**.
-5. **Load it.** Click **Load unpacked** (top-left), then select the folder you unzipped in step 2.
-6. **Pin it.** Click the puzzle-piece icon in Chrome's toolbar, then the pin next to Social Deleter.
+2. **Unzip it.** Double-click the downloaded file. You'll get a folder — move it somewhere you won't delete by accident (e.g. your Documents folder). Your browser loads it from this folder every time, so it needs to stay put.
+3. **Open the extensions page.** Type the address for your browser into the address bar:
+   | Browser | Address |
+   |---|---|
+   | Chrome | `chrome://extensions` |
+   | Vivaldi | `vivaldi://extensions` |
+   | Brave | `brave://extensions` |
+   | Edge | `edge://extensions` |
+4. **Turn on Developer mode.** It's a toggle in the **top-right corner** (in Edge, it's on the **left** sidebar).
+5. **Load it.** Click **Load unpacked**, then select the folder you unzipped in step 2.
+6. **Pin it.** Click the puzzle-piece icon in the toolbar, then the pin next to Social Deleter.
 
 Done. Click the Social Deleter icon any time to open its panel.
 
 ### Updating
 
-When a new version is released (sites change often, so this happens), download the new ZIP, unzip it **over the same folder** (replace when asked), then click the refresh icon on Social Deleter's card at `chrome://extensions`.
+When a new version is released (sites change often, so this happens), download the new ZIP, unzip it **over the same folder** (replace when asked), then click the refresh icon on Social Deleter's card on your browser's extensions page.
 
 ---
 
@@ -44,7 +50,16 @@ If a site redesign breaks the extension mid-run, a local AI model can propose a 
 
 - Install [Ollama](https://ollama.com) (endpoint `http://localhost:11434/v1`) or [LM Studio](https://lmstudio.ai) (endpoint `http://localhost:1234/v1`) and load a small model (a 7B–14B model is plenty).
 - In Social Deleter's **AI settings**, enter the endpoint and model name, then click **Test** to confirm it's reachable.
-- Ollama users: allow the extension to reach Ollama by setting the `OLLAMA_ORIGINS` environment variable to include the extension origin (`chrome-extension://*`). LM Studio users: enable CORS in its server settings.
+**Ollama users — this step is required, and skipping it fails silently.** Ollama refuses requests from browser extensions until you allow them, and the refusal looks like the AI simply doing nothing. On macOS:
+
+```bash
+launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"
+# then fully quit Ollama (menu bar → Quit) and reopen it
+```
+
+On Linux, set `OLLAMA_ORIGINS="chrome-extension://*"` in the environment Ollama starts from (e.g. `systemctl edit ollama`). **LM Studio users:** enable CORS in its server settings.
+
+Then click **Test** in the extension's AI settings. It sends a real request, so "Ready ✓" means repairs will actually work — if it reports a 403, the step above hasn't taken effect yet.
 
 Without a configured model, the extension simply pauses and notifies you instead of self-healing.
 
@@ -56,7 +71,8 @@ Built with [WXT](https://wxt.dev/) + TypeScript. Requires Node 22.
 
 ```bash
 npm install
-npm run dev      # launches Chrome with the extension in dev mode (HMR)
+npm run dev          # launches Chrome with the extension in dev mode (HMR)
+npm run dev:vivaldi  # same, in Vivaldi (also: dev:chrome, dev:edge)
 npm run compile  # typecheck (tsc --noEmit)
 npm run build    # production build → .output/chrome-mv3
 npm run zip      # packaged release zip

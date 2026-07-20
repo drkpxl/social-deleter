@@ -12,7 +12,7 @@ import { createLlmClient, loadLlmConfig, saveLlmConfig } from '@/src/llm-client'
 import { DEFAULT_BLUESKY_PACING, PacingEngine } from '@/src/pacing';
 import { RunController } from '@/src/run-controller';
 import { newRunId } from '@/src/run-id';
-import type { Category, DateFilter, LlmClient, RunConfig, RunStatus } from '@/src/types';
+import type { Category, DateFilter, LlmClient, RunConfig, RunEvent, RunStatus } from '@/src/types';
 
 /** v1 is Bluesky-only; the active tab must be on this host to run. */
 const SUPPORTED_HOST = 'bsky.app';
@@ -90,6 +90,7 @@ interface LogRow {
   at: string;
   text: string;
   isEvent: boolean;
+  kind?: RunEvent['kind'];
 }
 
 const log = new DeletionLog();
@@ -269,9 +270,11 @@ function renderProgress(): void {
     line.textContent = `Paused — ${status.deleted} deleted`;
     detail.textContent = status.reason;
   } else {
-    line.classList.add('state-done');
-    line.textContent = `Done — ${status.deleted} deleted`;
-    detail.textContent = '';
+    // "Done — 0 deleted" alone reads as success; say plainly that nothing happened.
+    const nothing = status.deleted === 0;
+    line.classList.add(nothing ? 'state-empty' : 'state-done');
+    line.textContent = nothing ? 'Done — 0 deleted (nothing matched)' : `Done — ${status.deleted} deleted`;
+    detail.textContent = nothing ? 'Check the Activity list for warnings.' : '';
   }
 
   el('progress-state').replaceChildren(line, detail);
@@ -321,6 +324,7 @@ function renderRows(rows: LogRow[]): void {
   const items = rows.map((row) => {
     const li = document.createElement('li');
     if (row.isEvent) li.className = 'row-event';
+    if (row.kind === 'suspicious') li.classList.add('row-suspicious');
 
     const text = document.createElement('span');
     text.className = 'row-text';
@@ -356,6 +360,7 @@ async function refreshLog(): Promise<void> {
       at: event.at,
       text: event.detail ? `${event.kind} — ${truncate(event.detail)}` : event.kind,
       isEvent: true,
+      kind: event.kind,
     })),
   ];
   rows.sort((a, b) => b.at.localeCompare(a.at));

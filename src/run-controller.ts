@@ -73,6 +73,51 @@ const SELECTOR_INTENTS: Record<string, string> = {
 
 const KNOWN_SELECTOR_KEYS = Object.keys(SELECTOR_INTENTS);
 
+/**
+ * What one category actually did, so a run that "succeeds" while deleting
+ * nothing can be told apart from real work. `skippedAlreadyLogged` counts items
+ * whose signature was already in the skip-set when we reached them — resume
+ * re-encounters plus re-encounters of what this category already deleted; both
+ * are legitimate and must never read as a broken selector.
+ */
+interface CategoryOutcome {
+  enumerated: number;
+  deleted: number;
+  skippedAlreadyLogged: number;
+  /** Adapter returned `skipped` — the DOM never offered the delete control. */
+  skippedByAdapter: number;
+}
+
+type Suspicion = 'empty' | 'all-skipped';
+
+function newOutcome(): CategoryOutcome {
+  return { enumerated: 0, deleted: 0, skippedAlreadyLogged: 0, skippedByAdapter: 0 };
+}
+
+/**
+ * Classify a finished category. `empty` may be a genuinely empty tab; every
+ * `all-skipped` case requires at least one adapter skip and no deletions, so a
+ * pure resume pass (everything already logged) stays silent.
+ */
+function classifySuspicion(outcome: CategoryOutcome): Suspicion | undefined {
+  if (outcome.enumerated === 0) return 'empty';
+  const attempted = outcome.enumerated - outcome.skippedAlreadyLogged;
+  if (
+    outcome.deleted === 0 &&
+    outcome.skippedByAdapter > 0 &&
+    outcome.skippedByAdapter >= attempted
+  ) {
+    return 'all-skipped';
+  }
+  return undefined;
+}
+
+function suspicionDetail(cat: Category, outcome: CategoryOutcome, suspicion: Suspicion): string {
+  return suspicion === 'empty'
+    ? `${cat}: found 0 items — the item selector may have changed (or this tab is empty)`
+    : `${cat}: found ${outcome.enumerated} items but deleted 0 — the delete control may have changed`;
+}
+
 /** Thrown internally to unwind the loop into a resumable pause (not markComplete). */
 class PauseSignal {
   constructor(readonly reason: string) {}
@@ -227,18 +272,21 @@ export class RunController {
   /**
    * Drive one category to exhaustion. A SelectorMissingError from enumeration
    * triggers one heal-and-restart (the skip-set makes re-enumeration harmless).
+   * `isHealRetry` marks the single permitted post-outcome retry, so a category
+   * can never heal-and-retry more than once per run.
    */
-  private async runCategory(cat: Category): Promise<void> {
+  private async runCategory(cat: Category, isHealRetry = false): Promise<void> {
     this.emitRunning(cat);
     let enumHealed = false;
+    const outcome = newOutcome();
 
     while (true) {
       try {
         for await (const item of this.adapter.enumerate(cat, this.config.dateFilter)) {
           if (this.stopRequested) throw new StopSignal();
-          await this.processItem(item, cat);
+          await this.processItem(item, cat, outcome);
         }
-        return;
+        break;
       } catch (err) {
         if (err instanceof StopSignal || err instanceof PauseSignal) throw err;
         if (isRpcUnreachable(err)) throw new PauseSignal(TAB_GONE);
@@ -252,11 +300,45 @@ export class RunController {
         throw new PauseSignal(messageOf(err));
       }
     }
+
+    await this.reviewOutcome(cat, outcome, isHealRetry);
   }
 
-  private async processItem(item: Item, cat: Category): Promise<void> {
+  /**
+   * A category that deleted nothing is never silent. Emit the `suspicious`
+   * event, then — once per category per run, and only with an LLM — try to heal
+   * the selector behind the failure and re-run. A failed or unavailable heal
+   * leaves the event as the record and moves on: a genuinely empty tab must not
+   * block the remaining categories.
+   */
+  private async reviewOutcome(
+    cat: Category,
+    outcome: CategoryOutcome,
+    isHealRetry: boolean,
+  ): Promise<void> {
+    const suspicion = classifySuspicion(outcome);
+    if (!suspicion) return;
+
+    await this.emitEvent('suspicious', suspicionDetail(cat, outcome, suspicion));
+    if (isHealRetry) return;
+
+    const key =
+      suspicion === 'empty'
+        ? this.adapter.itemSelectorKey[cat]
+        : this.adapter.deleteControlSelectorKey[cat];
+    // No item element to anchor on — tryHeal falls back to a page-body snapshot.
+    if (await this.tryHeal(key)) {
+      await this.runCategory(cat, true);
+    }
+  }
+
+  private async processItem(item: Item, cat: Category, outcome: CategoryOutcome): Promise<void> {
     const sig = signatureOf(item);
-    if (this.skipSet.has(sig)) return; // already deleted/gone under this runId
+    outcome.enumerated++;
+    if (this.skipSet.has(sig)) {
+      outcome.skippedAlreadyLogged++;
+      return; // already deleted/gone under this runId
+    }
     if (this.stopRequested) throw new StopSignal();
 
     // Guard against a modal/banner blocking the delete before we spend a delay on it.
@@ -265,12 +347,19 @@ export class RunController {
     await this.paced(() => this.deps.pacing.delay(this.abortSignal));
 
     const result = await this.deleteWithRecovery(item, false);
-    this.applyResult(item, sig, result, cat);
+    this.applyResult(item, sig, result, cat, outcome);
   }
 
-  private applyResult(item: Item, sig: string, result: DeleteResult, cat: Category): void {
+  private applyResult(
+    item: Item,
+    sig: string,
+    result: DeleteResult,
+    cat: Category,
+    outcome: CategoryOutcome,
+  ): void {
     if (result.status === 'deleted') {
       this.deleted++;
+      outcome.deleted++;
       this.skipSet.add(sig);
       this.deps.pacing.resetBackoff();
       void this.deps.log.append({
@@ -285,7 +374,9 @@ export class RunController {
       return;
     }
     if (result.status === 'skipped') {
-      // Already gone (resume re-encounter) — treat as success, no counter bump.
+      // The DOM offered no control: item already gone, or the selector broke.
+      // Indistinguishable here — reviewOutcome decides once the category ends.
+      outcome.skippedByAdapter++;
       this.skipSet.add(sig);
       return;
     }
@@ -332,9 +423,11 @@ export class RunController {
   }
 
   /**
-   * Selector self-healing: snapshot around the item → ask the LLM for a
-   * replacement → validate it matches ≥1 live node → persist as an override and
-   * log. Returns false (→ caller pauses) with no LLM, no key, or a bad proposal.
+   * Selector self-healing: snapshot around the item (or the whole page body when
+   * no item is supplied) → ask the LLM for a replacement → validate it matches
+   * ≥1 live node → persist as an override and log. Returns false with no LLM, no
+   * key, or a bad proposal; what that means is the caller's call (pause, or —
+   * for a suspicious category outcome — just carry on).
    */
   private async tryHeal(key: string | undefined, item?: Item): Promise<boolean> {
     if (!this.deps.llm || !key) return false;

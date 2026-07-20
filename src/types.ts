@@ -142,7 +142,17 @@ export interface LogEntry {
 export interface RunEvent {
   runId: string;
   at: string;
-  kind: 'started' | 'stopped' | 'paused' | 'resumed' | 'completed' | 'selector-healed' | 'overrides-discarded' | 'error';
+  kind:
+    | 'started'
+    | 'stopped'
+    | 'paused'
+    | 'resumed'
+    | 'completed'
+    | 'selector-healed'
+    | 'overrides-discarded'
+    /** A category finished with an outcome that looks like a broken selector rather than real work. */
+    | 'suspicious'
+    | 'error';
   detail?: string;
 }
 
@@ -173,6 +183,10 @@ export interface SiteAdapter {
   site: Site;
   categories: Category[];
   supportsDateFilter: Record<Category, boolean>;
+  /** Selector-map key for the item root of each category — lets the controller heal it. */
+  itemSelectorKey: Record<Category, string>;
+  /** Selector-map key for the control that performs the delete — healed when nothing turned out deletable. */
+  deleteControlSelectorKey: Record<Category, string>;
   /** Panel-side async generator; iteration state lives in its closure. */
   enumerate(cat: Category, dateFilter: DateFilter): AsyncIterable<Item>;
   deleteItem(item: Item): Promise<DeleteResult>;

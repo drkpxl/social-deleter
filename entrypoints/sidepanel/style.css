@@ -178,6 +178,9 @@ fieldset:disabled {
 .progress .state-done {
   color: var(--ok);
 }
+.progress .state-empty {
+  color: var(--stop);
+}
 .progress .state-detail {
   font-size: 12px;
   color: var(--muted);
@@ -223,6 +226,9 @@ fieldset:disabled {
 #log-list .row-event .row-text {
   color: var(--accent);
   font-weight: 600;
+}
+#log-list .row-suspicious .row-text {
+  color: var(--stop);
 }
 #log-list .empty {
   justify-content: center;

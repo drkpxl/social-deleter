@@ -27,11 +27,24 @@ import { DEFAULT_BLUESKY_PACING } from '../pacing';
 const SITE: Site = 'bluesky';
 
 /** Item-root selector key per category (resolved via the selector map). */
-const ITEM_SELECTOR_KEY: Record<Category, string> = {
+export const ITEM_SELECTOR_KEY: Record<Category, string> = {
   posts: 'postItem',
   reposts: 'repostItem',
   replies: 'replyItem',
   likes: 'likeItem',
+};
+
+/**
+ * The selector that opens/performs the delete for each category — the one the
+ * controller heals when items enumerate but none turn out deletable. Reposts
+ * name the repost button rather than `undoRepostMenuItem`: the button is the
+ * gate, and a healed button is what lets the menu item be reached at all.
+ */
+export const DELETE_CONTROL_SELECTOR_KEY: Record<Category, string> = {
+  posts: 'menuButton',
+  reposts: 'repostButton',
+  replies: 'menuButton',
+  likes: 'unlikeButton',
 };
 
 /**
@@ -243,6 +256,8 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     site: SITE,
     categories: ['posts', 'reposts', 'replies', 'likes'],
     supportsDateFilter: SUPPORTS_DATE_FILTER,
+    itemSelectorKey: ITEM_SELECTOR_KEY,
+    deleteControlSelectorKey: DELETE_CONTROL_SELECTOR_KEY,
     pacing: DEFAULT_BLUESKY_PACING,
     enumerate,
     deleteItem,

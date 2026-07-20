@@ -52,6 +52,8 @@ interface SiteAdapter {
   site: 'bluesky' | 'x' | 'threads';
   categories: Category[];                          // posts | replies | likes
   supportsDateFilter: Record<Category, boolean>;   // likes = false on all sites
+  itemSelectorKey: Record<Category, string>;       // selector-map key the controller heals when a category enumerates 0 items
+  deleteControlSelectorKey: Record<Category, string>; // ...and when items enumerate but none are deletable
   enumerate(cat: Category, dateFilter: DateFilter): AsyncIterable<Item>; // panel-side async gen
   deleteItem(item: Item): Promise<DeleteResult>;   // issues DOM primitives over RPC
   selectors: SelectorMap;                           // versioned, LLM-repairable
@@ -112,3 +114,4 @@ Resume = **re-enumerate from a fresh page and skip already-deleted items.** No c
 - On resume: load log entries for this `runId`, build a `Set` of normalized signatures `snippet|url` (url absent → `snippet` only). During enumeration, skip any item whose signature is in the set.
 - **Reconciliation pass:** after enumeration catches up to where the log says it should be, do one extra scroll page; if new items appear, continue; if not, the category is complete.
 - **Acceptable failure mode:** a handful of re-delete attempts on items already gone (harmless — the menu simply won't offer a delete, adapter treats as success-skip). Simpler and more robust than trying to be exact.
+- **But never silently:** the controller tallies each category (`enumerated` / `deleted` / already-logged skips / adapter skips). A category that enumerates 0 items, or that enumerates items and deletes none while the adapter skipped them, emits a `suspicious` run event and — once per category per run, if an LLM is configured — heals `itemSelectorKey` / `deleteControlSelectorKey` and re-runs that category. A failed heal leaves the event as the record and moves on; an empty category never pauses or aborts the run.

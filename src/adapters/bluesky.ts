@@ -21,7 +21,7 @@ import type {
 import { createRpcClient } from '../rpc';
 import { selectorMap } from '../selector-map';
 import { signatureOf } from '../deletion-log';
-import { navigateTab } from '../navigation';
+import { assertPageFound, navigateTab } from '../navigation';
 import { DEFAULT_BLUESKY_PACING } from '../pacing';
 import { messageOf } from '../errors';
 
@@ -61,12 +61,17 @@ export const SUPPORTS_DATE_FILTER: Record<Category, boolean> = {
   likes: false,
 };
 
-/** Profile sub-route per category; posts live on the bare profile page. */
-const ROUTE_SUFFIX: Record<Category, string> = {
-  posts: '',
-  reposts: '',
-  replies: '/replies',
-  likes: '/likes',
+/**
+ * Selector key of the profile tab that holds each category. Bluesky's profile
+ * tabs are CLIENT-SIDE state — the URL never changes — so categories are reached
+ * by clicking the tab, not by a sub-route (/replies and /likes are 404s).
+ * Posts and reposts share the Posts tab; re-clicking it is a harmless no-op.
+ */
+export const TAB_SELECTOR_KEY: Record<Category, string> = {
+  posts: 'tabPosts',
+  reposts: 'tabPosts',
+  replies: 'tabReplies',
+  likes: 'tabLikes',
 };
 
 /** Categories whose feed interleaves reposts and so must be classified per node. */
@@ -74,6 +79,13 @@ const REPOST_AWARE: ReadonlySet<Category> = new Set<Category>(['posts', 'reposts
 
 /** Consecutive no-new-item rounds tolerated before giving up (infinite-loop guard). */
 const MAX_NO_PROGRESS = 3;
+
+/** Let the feed re-render after a tab switch before the first query. */
+const TAB_SETTLE_MS = 1200;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Extract `<handle>` from a bsky.app `/profile/<handle>/...` URL. */
 export function handleFromUrl(url: string): string | undefined {
@@ -89,8 +101,8 @@ export function handleFromUrl(url: string): string | undefined {
   return segments[1];
 }
 
-export function routeFor(category: Category, handle: string): string {
-  return `https://bsky.app/profile/${handle}${ROUTE_SUFFIX[category]}`;
+export function routeFor(handle: string): string {
+  return `https://bsky.app/profile/${handle}`;
 }
 
 function toItem(category: Category, node: NodeInfo): Item {
@@ -136,9 +148,24 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
   }
 
   async function* enumerate(category: Category, dateFilter: DateFilter): AsyncIterable<Item> {
-    // Each category lives on its own profile route; without this every category
-    // would re-scan whatever tab happened to be showing.
-    await navigateTab(tabId, routeFor(category, await currentHandle()));
+    // Every category lives on the same profile route; the ACTIVE TAB is what
+    // decides which items are in the DOM. Navigating first also recovers from a
+    // stray not-found page left behind by an earlier bad route.
+    await navigateTab(tabId, routeFor(await currentHandle()));
+    await assertPageFound(tabId);
+
+    const tabKey = TAB_SELECTOR_KEY[category];
+    const tabSelector = await resolve(tabKey);
+    const tabbed = await rpc.click({ selector: tabSelector });
+    // Never continue on a failed tab switch: enumerating whichever tab happened
+    // to be showing is exactly the bug this replaced.
+    if (!tabbed.ok) {
+      throw new Error(
+        `Could not switch to the tab for category "${category}" (${tabKey}: ${tabSelector}) — ${tabbed.reason ?? 'no reason given'}`,
+      );
+    }
+    // The feed re-renders after a tab switch; query too soon and it's the old tab's items.
+    await sleep(TAB_SETTLE_MS);
 
     const selector = await resolve(ITEM_SELECTOR_KEY[category]);
     const timestampSelector = await resolve('itemTimestamp');

@@ -1,5 +1,5 @@
 {
-  "_note": "VERIFIED live against bsky.app: postItem, replyItem, likeItem, menuButton, deleteMenuItem, deleteConfirm (posts deletion works end to end). UNVERIFIED / best-effort: repostIndicator, repostButton, undoRepostMenuItem, repostItem, unlikeButton, itemTimestamp. schemaVersion 2 adds the repost keys and discards stored overrides from v1 by design.",
+  "_note": "VERIFIED against live bsky.app (logged in) via DOM inspection: item roots are data-testid=\"feedItem-by-<handle>\"; profile tabs are CLIENT-SIDE (the URL never changes) and are reached by clicking [role=\"tab\"]:has([data-testid=\"profilePager-<Label>\"]); posts/reposts/likes deletion controls confirmed working. Bluesky has NO <time datetime> \u2014 the date lives in the permalink anchor's data-tooltip/aria-label as prose (e.g. \"July 19, 2026 at 4:56 PM\"). Unverified: undoRepostMenuItem's exact testid (menu-only).",
   "schemaVersion": 2,
   "selectors": {
     "postItem": "div[data-testid^=\"feedItem\"]",
@@ -13,6 +13,9 @@
     "repostIndicator": "[data-testid=\"feedItem-repostedBy\"], a[href*=\"/profile/\"][aria-label*=\"Reposted\" i], a[aria-label*=\"Reposted by\" i]",
     "repostButton": "[data-testid=\"repostBtn\"]",
     "undoRepostMenuItem": "[data-testid=\"repostDropdownUndoBtn\"], [role=\"menuitem\"][aria-label*=\"Undo repost\" i], [data-testid=\"repostDropdownRepostBtn\"]",
-    "itemTimestamp": "a[href*=\"/post/\"] time[datetime], a[data-tooltip] time[datetime], time[datetime]"
+    "itemTimestamp": "a[href*=\"/post/\"][data-tooltip], a[href*=\"/post/\"][aria-label], time[datetime]",
+    "tabPosts": "[role=\"tab\"]:has([data-testid=\"profilePager-Posts\"])",
+    "tabReplies": "[role=\"tab\"]:has([data-testid=\"profilePager-Replies\"])",
+    "tabLikes": "[role=\"tab\"]:has([data-testid=\"profilePager-Likes\"])"
   }
 }

@@ -6,6 +6,7 @@
  * callers need no special handling beyond awaiting this.
  */
 import { browser } from 'wxt/browser';
+import { createRpcClient } from './rpc';
 
 const LOAD_TIMEOUT_MS = 15_000;
 const POLL_STEP_MS = 200;
@@ -41,4 +42,19 @@ export async function navigateTab(tabId: number, url: string): Promise<void> {
   }
 
   await sleep(SETTLE_MS);
+}
+
+/** Bluesky renders a 200-page for unknown routes; without this it enumerates as "0 items". */
+const NOT_FOUND_SELECTOR = '[data-testid="notFoundView"]';
+
+/**
+ * Throw if the tab is showing Bluesky's not-found view. Call after navigation:
+ * an error page has no feed, so enumerating it looks like an empty category.
+ */
+export async function assertPageFound(tabId: number): Promise<void> {
+  const rpc = createRpcClient(tabId);
+  const hits = await rpc.queryItems({ selector: NOT_FOUND_SELECTOR });
+  if (hits.length === 0) return;
+  const state = await rpc.readState();
+  throw new Error(`Bluesky shows a "not found" page at ${state.url} — nothing can be enumerated here`);
 }

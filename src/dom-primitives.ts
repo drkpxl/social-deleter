@@ -37,8 +37,20 @@ function isVisible(el: Element): boolean {
   return style.visibility !== 'hidden' && style.display !== 'none';
 }
 
+/**
+ * Attributes that may carry a post's date, in preference order. Kept broad on
+ * purpose: an LLM-healed selector only points at an element — if the date were
+ * read from one hard-coded attribute, a site that moved it would still yield
+ * nothing. Bluesky, for example, has no <time datetime> at all; it renders
+ * relative text and puts the real date in aria-label/data-tooltip.
+ */
+const DATE_ATTRS = ['datetime', 'data-tooltip', 'aria-label', 'title'];
+
 function toIso(raw: string): string | undefined {
-  const parsed = Date.parse(raw);
+  // Human-readable forms like "July 19, 2026 at 4:56 PM" need the connector
+  // removed before Date.parse will accept them.
+  const cleaned = raw.replace(/\s+at\s+/i, ' ').replace(/\s+/g, ' ').trim();
+  const parsed = Date.parse(cleaned);
   return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
 }
 
@@ -63,8 +75,13 @@ function findPermalink(node: Element, selector?: string): string | undefined {
 }
 
 function readDatetime(el: Element | null): string | undefined {
-  const raw = el?.getAttribute('datetime');
-  return raw ? toIso(raw) : undefined;
+  if (!el) return undefined;
+  for (const attr of DATE_ATTRS) {
+    const raw = el.getAttribute(attr);
+    const iso = raw ? toIso(raw) : undefined;
+    if (iso) return iso;
+  }
+  return undefined;
 }
 
 function findTimestamp(node: Element, selector?: string): string | undefined {
@@ -72,7 +89,15 @@ function findTimestamp(node: Element, selector?: string): string | undefined {
     const scoped = readDatetime(safeQuery(node, selector));
     if (scoped) return scoped;
   }
-  return readDatetime(node.querySelector('time[datetime], [datetime]'));
+  // Fallbacks, most-structured first: a real <time>, then any element carrying a
+  // date-bearing attribute (Bluesky's permalink anchor lands in the last group).
+  for (const fallback of ['time[datetime], [datetime]', 'a[href*="/post/"][data-tooltip]', 'a[data-tooltip], a[aria-label]']) {
+    for (const el of Array.from(node.querySelectorAll(fallback))) {
+      const iso = readDatetime(el);
+      if (iso) return iso;
+    }
+  }
+  return undefined;
 }
 
 function runProbes(node: Element, probes: Record<string, string>): Record<string, boolean> {

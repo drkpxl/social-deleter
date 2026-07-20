@@ -1,0 +1,1 @@
+[     395ms] [ERROR] Failed to load resource: the server responded with a status of 400 () @ https://cremini.us-west.host.bsky.network/xrpc/com.atproto.repo.getRecord?repo=did%3Aplc%3Aw6olbwo36vcgnjvne2zphkiz&collection=chat.bsky.actor.declaration&rkey=self:0

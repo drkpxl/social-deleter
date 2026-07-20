@@ -16,6 +16,9 @@ const MENU_ONLY_KEYS = new Set(['deleteMenuItem', 'deleteConfirm', 'undoRepostMe
 /** Item-root keys, in preference order, for choosing which node to sample. */
 const ITEM_KEYS = ['postItem', 'repostItem', 'replyItem', 'likeItem'];
 
+/** Profile tab keys — the controls that select a category (tabs are client-side state). */
+const TAB_KEYS = ['tabPosts', 'tabReplies', 'tabLikes'];
+
 const SAMPLE_MAX_CHARS = 3500;
 const PAGE_SAMPLE_MAX_CHARS = 2500;
 
@@ -82,9 +85,30 @@ export async function collectDiagnostics(tabId: number, site: Site = 'bluesky'):
     lines.push(snap.html);
   }
 
-  // Profile tab bar: the real routes for Replies/Likes, which cannot be guessed.
+  // Profile tabs are client-side state (the URL never changes), so the adapter
+  // reaches a category by clicking the tab whose visible text matches. Dump every
+  // candidate's text so a label mismatch is immediately obvious.
   lines.push('');
-  lines.push('--- profile tab bar ---');
+  lines.push('--- profile tabs ---');
+  // Replies/Likes tabs only exist on your OWN profile while logged in, so a 0
+  // here usually means the wrong profile, not a broken selector.
+  for (const key of TAB_KEYS) {
+    try {
+      const selector = await selectorMap.get(site, key);
+      const hits = await rpc.queryItems({ selector });
+      const text = hits[0] ? `  text: "${hits[0].textSnippet}"` : '';
+      lines.push(`${key}: ${hits.length}${hits.length === 0 ? '  <-- NO MATCH' : ''}${text}`);
+      lines.push(`    ${selector}`);
+    } catch (err) {
+      lines.push(`${key}: ERROR: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  // Every tab in the bar, so a renamed/missing label shows up immediately.
+  const allTabs = await rpc.queryItems({ selector: '[role="tablist"][data-testid="profilePager"] [role="tab"]' });
+  lines.push(`tabs present (${allTabs.length}): ${allTabs.map((t) => `"${t.textSnippet}"`).join(', ') || '(none)'}`);
+
+  lines.push('');
+  lines.push('--- profile tab bar markup ---');
   let tabsFound = false;
   for (const sel of ['[role="tablist"]', 'nav[role="navigation"]', '[data-testid="profilePager"]']) {
     const hits = await rpc.queryItems({ selector: sel });
@@ -95,7 +119,7 @@ export async function collectDiagnostics(tabId: number, site: Site = 'bluesky'):
     lines.push(snap.html);
     break;
   }
-  if (!tabsFound) lines.push('(no tablist/nav matched — paste the Replies and Likes tab URLs manually)');
+  if (!tabsFound) lines.push('(no tablist/nav matched — the tab selectors likely need updating)');
 
   // Timestamp element: Bluesky renders relative text, so find the post permalink anchor.
   lines.push('');

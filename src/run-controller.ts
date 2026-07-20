@@ -70,6 +70,9 @@ const SELECTOR_INTENTS: Record<string, string> = {
   deleteConfirm: 'the confirm button in the delete-confirmation dialog',
   unlikeButton: 'the like / unlike toggle button on a post',
   itemTimestamp: 'the post timestamp element (a time[datetime] node)',
+  tabPosts: 'the "Posts" tab control in the profile page tab bar',
+  tabReplies: 'the "Replies" tab control in the profile page tab bar',
+  tabLikes: 'the "Likes" tab control in the profile page tab bar',
 };
 
 const KNOWN_SELECTOR_KEYS = Object.keys(SELECTOR_INTENTS);

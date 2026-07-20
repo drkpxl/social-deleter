@@ -10,8 +10,13 @@ import { selectorMap } from './selector-map';
 import shippedBluesky from './selectors/bluesky.json';
 import type { Site } from './types';
 
-/** Selectors that only exist while a menu/dialog is open — 0 matches is expected. */
-const MENU_ONLY_KEYS = new Set(['deleteMenuItem', 'deleteConfirm', 'undoRepostMenuItem']);
+/** Selectors that only exist while a menu/dialog/toast is open — 0 matches is expected. */
+const MENU_ONLY_KEYS = new Set([
+  'deleteMenuItem',
+  'deleteConfirm',
+  'undoRepostMenuItem',
+  'dismissControls',
+]);
 
 /** Item-root keys, in preference order, for choosing which node to sample. */
 const ITEM_KEYS = ['postItem', 'repostItem', 'replyItem', 'likeItem'];

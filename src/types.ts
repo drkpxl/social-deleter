@@ -29,7 +29,12 @@ export type DeleteResult =
   | { status: 'deleted' }
   /** Item already gone (e.g. resume re-encounter); treated as success. */
   | { status: 'skipped'; reason: string }
-  | { status: 'failed'; reason: string };
+  /**
+   * `selectorKey` is what makes a failure healable: it names the selector-map
+   * key behind the control that didn't answer, so the controller can repair it
+   * instead of parsing prose. A failure with no key is a genuine failure.
+   */
+  | { status: 'failed'; reason: string; selectorKey?: string; code?: PrimitiveFailureCode };
 
 // ---------------------------------------------------------------------------
 // DOM primitives — the ONLY interface the content script exposes. Stateless.
@@ -54,9 +59,19 @@ export interface PageState {
   bannerText?: string;
 }
 
+/**
+ * Machine-readable cause of a primitive failure. `item-missing` means the item
+ * root itself was gone (legitimately vanished — a skip); everything else points
+ * at a selector that no longer works and is therefore a heal candidate.
+ */
+export type PrimitiveFailureCode = 'item-missing' | 'trigger-missing' | 'timeout' | 'bad-selector';
+
 export interface PrimitiveResult {
   ok: boolean;
   reason?: string;
+  code?: PrimitiveFailureCode;
+  /** Which argument's selector failed, e.g. 'menuButtonSelector' — lets the caller map it to a selector-map key. */
+  failedArg?: string;
 }
 
 /** RPC surface implemented by every site content script. */
@@ -96,15 +111,27 @@ export type RpcResponse =
 // Selector map — versioned plain data; shipped JSON + storage overrides.
 // ---------------------------------------------------------------------------
 
+/**
+ * A shipped selector is either a bare selector string or a selector paired with
+ * the plain-language `intent` the LLM healer needs. Intents live here, beside
+ * the selector they describe, so a new key can never be added without one being
+ * available (the alternative — a mirrored table in code — silently degrades
+ * healing for exactly the key someone forgot to mirror).
+ * Stored overrides only ever use the bare-string form.
+ */
+export type SelectorEntry = string | { selector: string; intent?: string };
+
 export interface SelectorMapData {
   schemaVersion: number;
   /** Named selectors, e.g. postItem, menuButton, deleteMenuItem, deleteConfirm. */
-  selectors: Record<string, string>;
+  selectors: Record<string, SelectorEntry>;
 }
 
 /** Resolution order: override (schemaVersion must match shipped) → shipped → LLM-heal → pause. */
 export interface SelectorResolver {
   get(site: Site, key: string): Promise<string>;
+  /** Plain-language description of what a key targets, for LLM heal prompts. */
+  getIntent(site: Site, key: string): Promise<string | undefined>;
   /** Persist an LLM-healed selector; takes effect immediately. */
   setOverride(site: Site, key: string, selector: string): Promise<void>;
 }
@@ -168,8 +195,17 @@ export interface LlmConfig {
 }
 
 export interface LlmClient {
-  /** Returns a replacement CSS selector, or null if the model can't produce one. Caller validates against live DOM. */
-  healSelector(args: { snapshotHtml: string; intent: string; failedSelector: string }): Promise<string | null>;
+  /**
+   * Returns a replacement CSS selector, or null if the model can't produce one.
+   * Caller validates against the live DOM and may call again with the proposals
+   * it rejected (`rejected`) so the model doesn't repeat them.
+   */
+  healSelector(args: {
+    snapshotHtml: string;
+    intent: string;
+    failedSelector: string;
+    rejected?: string[];
+  }): Promise<string | null>;
   triageState(args: { pageText: string }): Promise<TriageAction>;
   available(): Promise<boolean>;
 }
@@ -186,6 +222,12 @@ export interface SiteAdapter {
   itemSelectorKey: Record<Category, string>;
   /** Selector-map key for the control that performs the delete — healed when nothing turned out deletable. */
   deleteControlSelectorKey: Record<Category, string>;
+  /**
+   * Selector-map key for an item's timestamp element, when the site has one.
+   * Lets the controller notice that a date-filtered run enumerated items with no
+   * readable date (which would silently delete nothing) and heal that key.
+   */
+  timestampSelectorKey?: string;
   /** Panel-side async generator; iteration state lives in its closure. */
   enumerate(cat: Category, dateFilter: DateFilter): AsyncIterable<Item>;
   deleteItem(item: Item): Promise<DeleteResult>;

@@ -17,13 +17,29 @@ async function pollFor(predicate: () => boolean, timeoutMs: number, stepMs = 100
   return predicate();
 }
 
+/** Thrown when a caller-supplied selector isn't parseable — reported as `bad-selector`. */
+class BadSelectorError extends Error {}
+
+function queryOne(root: ParentNode, selector: string): HTMLElement | null {
+  try {
+    return root.querySelector<HTMLElement>(selector);
+  } catch {
+    throw new BadSelectorError(`invalid selector: ${selector}`);
+  }
+}
+
 async function pollForElement(selector: string, timeoutMs: number): Promise<HTMLElement | null> {
   let found: HTMLElement | null = null;
   await pollFor(() => {
-    found = document.querySelector<HTMLElement>(selector);
+    found = queryOne(document, selector);
     return found !== null;
   }, timeoutMs);
   return found;
+}
+
+function badSelector(err: unknown, failedArg: string): PrimitiveResult {
+  if (!(err instanceof BadSelectorError)) throw err;
+  return { ok: false, reason: err.message, code: 'bad-selector', failedArg };
 }
 
 function collapse(text: string): string {
@@ -145,29 +161,66 @@ export function createDomPrimitives(): DomPrimitives {
     },
 
     async openMenu({ itemSelector, menuButtonSelector }): Promise<PrimitiveResult> {
-      const item = document.querySelector<HTMLElement>(itemSelector);
-      if (!item) return { ok: false, reason: `item not found: ${itemSelector}` };
-      const button = item.querySelector<HTMLElement>(menuButtonSelector);
-      if (!button) return { ok: false, reason: `menu button not found: ${menuButtonSelector}` };
+      let item: HTMLElement | null;
+      try {
+        item = queryOne(document, itemSelector);
+      } catch (err) {
+        return badSelector(err, 'itemSelector');
+      }
+      // A missing item root is the item legitimately vanishing (already deleted,
+      // feed re-rendered) — never a broken selector, so never a heal trigger.
+      if (!item) return { ok: false, reason: `item not found: ${itemSelector}`, code: 'item-missing', failedArg: 'itemSelector' };
+
+      let button: HTMLElement | null;
+      try {
+        button = queryOne(item, menuButtonSelector);
+      } catch (err) {
+        return badSelector(err, 'menuButtonSelector');
+      }
+      if (!button) {
+        return { ok: false, reason: `menu button not found: ${menuButtonSelector}`, code: 'trigger-missing', failedArg: 'menuButtonSelector' };
+      }
+
       button.click();
       const appeared = await pollFor(() => document.querySelector('[role="menu"]') !== null, 500);
-      return appeared ? { ok: true } : { ok: false, reason: 'menu did not appear' };
+      return appeared
+        ? { ok: true }
+        : { ok: false, reason: 'menu did not appear', code: 'timeout', failedArg: 'menuButtonSelector' };
     },
 
     async click({ selector }): Promise<PrimitiveResult> {
-      const el = await pollForElement(selector, 3000);
-      if (!el) return { ok: false, reason: `element not found: ${selector}` };
+      let el: HTMLElement | null;
+      try {
+        el = await pollForElement(selector, 3000);
+      } catch (err) {
+        return badSelector(err, 'selector');
+      }
+      if (!el) return { ok: false, reason: `element not found: ${selector}`, code: 'trigger-missing', failedArg: 'selector' };
       el.click();
       return { ok: true };
     },
 
     async clickDelete({ menuItemSelector, confirmSelector }): Promise<PrimitiveResult> {
-      const menuItem = await pollForElement(menuItemSelector, 3000);
-      if (!menuItem) return { ok: false, reason: `delete item not found: ${menuItemSelector}` };
+      let menuItem: HTMLElement | null;
+      try {
+        menuItem = await pollForElement(menuItemSelector, 3000);
+      } catch (err) {
+        return badSelector(err, 'menuItemSelector');
+      }
+      if (!menuItem) {
+        return { ok: false, reason: `delete item not found: ${menuItemSelector}`, code: 'trigger-missing', failedArg: 'menuItemSelector' };
+      }
       menuItem.click();
       if (confirmSelector) {
-        const confirm = await pollForElement(confirmSelector, 3000);
-        if (!confirm) return { ok: false, reason: `confirm control not found: ${confirmSelector}` };
+        let confirm: HTMLElement | null;
+        try {
+          confirm = await pollForElement(confirmSelector, 3000);
+        } catch (err) {
+          return badSelector(err, 'confirmSelector');
+        }
+        if (!confirm) {
+          return { ok: false, reason: `confirm control not found: ${confirmSelector}`, code: 'trigger-missing', failedArg: 'confirmSelector' };
+        }
         confirm.click();
       }
       return { ok: true };

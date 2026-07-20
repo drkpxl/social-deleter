@@ -15,17 +15,21 @@ import type {
   DeleteResult,
   Item,
   NodeInfo,
+  PrimitiveResult,
   Site,
   SiteAdapter,
 } from '../types';
 import { createRpcClient } from '../rpc';
-import { selectorMap } from '../selector-map';
+import { selectorMap, SelectorMissingError } from '../selector-map';
 import { signatureOf } from '../deletion-log';
 import { assertPageFound, navigateTab } from '../navigation';
 import { DEFAULT_BLUESKY_PACING } from '../pacing';
 import { messageOf } from '../errors';
 
 const SITE: Site = 'bluesky';
+
+/** Selector-map key for the element carrying a post's date. */
+export const TIMESTAMP_SELECTOR_KEY = 'itemTimestamp';
 
 /** Item-root selector key per category (resolved via the selector map). */
 export const ITEM_SELECTOR_KEY: Record<Category, string> = {
@@ -81,7 +85,9 @@ const REPOST_AWARE: ReadonlySet<Category> = new Set<Category>(['posts', 'reposts
 const MAX_NO_PROGRESS = 3;
 
 /** Let the feed re-render after a tab switch before the first query. */
-const TAB_SETTLE_MS = 1200;
+// Measured against the live site: a tab switch needed ~2s before the new feed
+// was queryable. Querying too early reads the previous tab's items.
+const TAB_SETTLE_MS = 2500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -103,6 +109,30 @@ export function handleFromUrl(url: string): string | undefined {
 
 export function routeFor(handle: string): string {
   return `https://bsky.app/profile/${handle}`;
+}
+
+/**
+ * Turn a failed primitive into a DeleteResult using its structured `code` — never
+ * its prose. `keyByArg` maps the primitive's argument names to the selector-map
+ * keys this adapter passed for them, so a failure names the exact key to heal.
+ * A vanished item root is a skip; anything else is a healable selector failure.
+ */
+function toFailure(result: PrimitiveResult, keyByArg: Record<string, string>): DeleteResult {
+  const reason = result.reason ?? 'primitive failed';
+  if (result.code === 'item-missing') return { status: 'skipped', reason };
+  const selectorKey = result.failedArg ? keyByArg[result.failedArg] : undefined;
+  const failure: DeleteResult = { status: 'failed', reason };
+  if (selectorKey) failure.selectorKey = selectorKey;
+  if (result.code) failure.code = result.code;
+  return failure;
+}
+
+/**
+ * The controller heals SelectorMissingError itself, so it must never be
+ * flattened into a `failed` reason string on its way out of deleteItem.
+ */
+function rethrowIfHealable(err: unknown): void {
+  if (err instanceof SelectorMissingError) throw err;
 }
 
 function toItem(category: Category, node: NodeInfo): Item {
@@ -158,9 +188,13 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     const tabSelector = await resolve(tabKey);
     const tabbed = await rpc.click({ selector: tabSelector });
     // Never continue on a failed tab switch: enumerating whichever tab happened
-    // to be showing is exactly the bug this replaced.
+    // to be showing is exactly the bug this replaced. Thrown as a
+    // SelectorMissingError so a renamed profilePager-* testid gets an LLM repair
+    // and one retry instead of ending the run.
     if (!tabbed.ok) {
-      throw new Error(
+      throw new SelectorMissingError(
+        SITE,
+        tabKey,
         `Could not switch to the tab for category "${category}" (${tabKey}: ${tabSelector}) — ${tabbed.reason ?? 'no reason given'}`,
       );
     }
@@ -168,7 +202,7 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     await sleep(TAB_SETTLE_MS);
 
     const selector = await resolve(ITEM_SELECTOR_KEY[category]);
-    const timestampSelector = await resolve('itemTimestamp');
+    const timestampSelector = await resolve(TIMESTAMP_SELECTOR_KEY);
     const probes = REPOST_AWARE.has(category)
       ? { isRepost: await resolve('repostIndicator') }
       : undefined;
@@ -224,17 +258,26 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
         itemSelector: item.elementKey,
         menuButtonSelector: menuButton,
       });
-      // Menu unavailable (button gone, item already deleted) → treat as skip:
-      // docs "Acceptable failure mode" — a gone item simply won't offer delete.
-      if (!opened.ok) return { status: 'skipped', reason: opened.reason ?? 'menu unavailable' };
+      // A gone item simply won't offer delete (docs "Acceptable failure mode") —
+      // that is `item-missing` and only that. A missing menu BUTTON on a present
+      // item means the selector is suspect, so it goes back as a healable failure.
+      // `itemSelector` is this item's stamped key, not a selector-map entry, so
+      // it is deliberately unmapped — a failure on it must never heal an item key.
+      if (!opened.ok) return toFailure(opened, { menuButtonSelector: 'menuButton' });
 
       const menuItemSelector = await resolve('deleteMenuItem');
       const confirmSelector = await resolve('deleteConfirm');
       const clicked = await rpc.clickDelete({ menuItemSelector, confirmSelector });
-      if (!clicked.ok) return { status: 'skipped', reason: clicked.reason ?? 'delete unavailable' };
+      if (!clicked.ok) {
+        return toFailure(clicked, {
+          menuItemSelector: 'deleteMenuItem',
+          confirmSelector: 'deleteConfirm',
+        });
+      }
 
       return { status: 'deleted' };
     } catch (err) {
+      rethrowIfHealable(err);
       return { status: 'failed', reason: messageOf(err) };
     }
   }
@@ -246,9 +289,13 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     const scopedSelector = `${item.elementKey} ${unlikeButton}`;
     try {
       const clicked = await rpc.click({ selector: scopedSelector });
-      if (!clicked.ok) return { status: 'skipped', reason: clicked.reason ?? 'unlike button unavailable' };
+      // The scoped selector is item root + unlike button, so a miss can't tell
+      // the two apart; blame the button — a vanished item shows up as a skip on
+      // the next enumeration anyway.
+      if (!clicked.ok) return toFailure(clicked, { selector: 'unlikeButton' });
       return { status: 'deleted' };
     } catch (err) {
+      rethrowIfHealable(err);
       return { status: 'failed', reason: messageOf(err) };
     }
   }
@@ -260,12 +307,13 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     // button to this item's stamped root, but not the menu — it renders in a portal.
     try {
       const opened = await rpc.click({ selector: `${item.elementKey} ${repostButton}` });
-      if (!opened.ok) return { status: 'skipped', reason: opened.reason ?? 'repost button unavailable' };
+      if (!opened.ok) return toFailure(opened, { selector: 'repostButton' });
 
       const undone = await rpc.click({ selector: undoMenuItem });
-      if (!undone.ok) return { status: 'skipped', reason: undone.reason ?? 'undo repost unavailable' };
+      if (!undone.ok) return toFailure(undone, { selector: 'undoRepostMenuItem' });
       return { status: 'deleted' };
     } catch (err) {
+      rethrowIfHealable(err);
       return { status: 'failed', reason: messageOf(err) };
     }
   }
@@ -282,6 +330,7 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     supportsDateFilter: SUPPORTS_DATE_FILTER,
     itemSelectorKey: ITEM_SELECTOR_KEY,
     deleteControlSelectorKey: DELETE_CONTROL_SELECTOR_KEY,
+    timestampSelectorKey: TIMESTAMP_SELECTOR_KEY,
     pacing: DEFAULT_BLUESKY_PACING,
     enumerate,
     deleteItem,

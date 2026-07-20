@@ -28,12 +28,18 @@ const TRIAGE_ACTIONS: readonly TriageAction[] = [
   'abort',
 ];
 
+/** How many times healSelector will ask the model before giving up. */
+const MAX_HEAL_ATTEMPTS = 3;
+
 const HEAL_SYSTEM_PROMPT = [
   'You are repairing a broken CSS selector for a browser-automation tool.',
   'You are given a trimmed HTML snapshot of the page, the selector that stopped',
   'matching, and a plain-language description of the element it should target.',
   'Return a replacement CSS selector that a standard `document.querySelector`',
   'would accept and that locates the described element in the snapshot.',
+  'Prefer stable attributes: data-testid, role, aria-label, href patterns, and',
+  'type. NEVER use generated class names — anything like css-1a2b3c or r-1loqt21',
+  'is build output that changes on every deploy and must not appear in your answer.',
   'Reply with ONLY the selector — a single line, no prose, no explanation,',
   'no code fences, no surrounding quotes.',
 ].join(' ');
@@ -44,6 +50,17 @@ const HEAL_CORRECTION_PROMPT = [
   'Reply again with ONLY one valid CSS selector on a single line —',
   'no prose, no code fences, no quotes.',
 ].join(' ');
+
+/** Sent after a syntactically fine but useless proposal, so the model doesn't repeat it. */
+function rejectedProposalsPrompt(rejected: string[]): string {
+  return [
+    'These selectors were already tried and matched NOTHING on the live page:',
+    ...rejected.map((selector) => `- ${selector}`),
+    'Propose a DIFFERENT selector. Anchor it on a stable attribute you can see in',
+    'the snapshot (data-testid, role, aria-label, href), never on generated class',
+    'names such as css-* or r-*. Reply with ONLY the selector.',
+  ].join('\n');
+}
 
 const TRIAGE_SYSTEM_PROMPT = [
   'You classify an unexpected page state for a deletion-automation tool and pick',
@@ -146,6 +163,7 @@ export function createLlmClient(config: LlmConfig): LlmClient {
     },
 
     async healSelector(args): Promise<string | null> {
+      const rejected = args.rejected ?? [];
       const userMessage = [
         `Intent: ${args.intent}`,
         `Broken selector: ${args.failedSelector}`,
@@ -157,9 +175,13 @@ export function createLlmClient(config: LlmConfig): LlmClient {
         { role: 'system', content: HEAL_SYSTEM_PROMPT },
         { role: 'user', content: userMessage },
       ];
+      // Proposals the caller already validated against the live DOM and rejected.
+      if (rejected.length > 0) {
+        messages.push({ role: 'user', content: rejectedProposalsPrompt(rejected) });
+      }
 
-      // One corrective retry on malformed output; any request failure ends it.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // Corrective retries on malformed output; any request failure ends it.
+      for (let attempt = 0; attempt < MAX_HEAL_ATTEMPTS; attempt++) {
         let reply: string;
         try {
           reply = await chatCompletion(config, messages);
@@ -167,9 +189,13 @@ export function createLlmClient(config: LlmConfig): LlmClient {
           return null;
         }
         const selector = parseSelector(reply);
-        if (selector) return selector;
+        // A repeat of something the live DOM already refused is not progress.
+        if (selector && !rejected.includes(selector)) return selector;
         messages.push({ role: 'assistant', content: reply });
-        messages.push({ role: 'user', content: HEAL_CORRECTION_PROMPT });
+        messages.push({
+          role: 'user',
+          content: selector ? rejectedProposalsPrompt([...rejected, selector]) : HEAL_CORRECTION_PROMPT,
+        });
       }
       return null;
     },

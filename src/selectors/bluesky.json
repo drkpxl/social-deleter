@@ -1,21 +1,70 @@
 {
-  "_note": "VERIFIED against live bsky.app (logged in) via DOM inspection: item roots are data-testid=\"feedItem-by-<handle>\"; profile tabs are CLIENT-SIDE (the URL never changes) and are reached by clicking [role=\"tab\"]:has([data-testid=\"profilePager-<Label>\"]); posts/reposts/likes deletion controls confirmed working. Bluesky has NO <time datetime> \u2014 the date lives in the permalink anchor's data-tooltip/aria-label as prose (e.g. \"July 19, 2026 at 4:56 PM\"). Unverified: undoRepostMenuItem's exact testid (menu-only).",
+  "_note": "VERIFIED against live bsky.app (logged in) via DOM inspection: item roots are data-testid=\"feedItem-by-<handle>\"; profile tabs are CLIENT-SIDE (the URL never changes) and are reached by clicking [role=\"tab\"]:has([data-testid=\"profilePager-<Label>\"]); posts/reposts/likes deletion controls confirmed working. Bluesky has NO <time datetime> — the date lives in the permalink anchor's data-tooltip/aria-label as prose (e.g. \"July 19, 2026 at 4:56 PM\"). Unverified: undoRepostMenuItem's exact testid (menu-only). Each entry is either a bare selector string or { selector, intent }; the intent is the plain-language description handed to the LLM when the selector needs repair, so it lives beside the selector rather than in a mirrored table in code.",
   "schemaVersion": 2,
   "selectors": {
-    "postItem": "div[data-testid^=\"feedItem\"]",
-    "repostItem": "div[data-testid^=\"feedItem\"]",
-    "replyItem": "div[data-testid^=\"feedItem\"]",
-    "likeItem": "div[data-testid^=\"feedItem\"]",
-    "menuButton": "[data-testid=\"postDropdownBtn\"], [aria-label=\"Open post options menu\"]",
-    "deleteMenuItem": "[data-testid=\"postDropdownDeleteBtn\"]",
-    "deleteConfirm": "[data-testid=\"confirmBtn\"]",
-    "unlikeButton": "[data-testid=\"likeBtn\"]",
-    "repostIndicator": "[data-testid=\"feedItem-repostedBy\"], a[href*=\"/profile/\"][aria-label*=\"Reposted\" i], a[aria-label*=\"Reposted by\" i]",
-    "repostButton": "[data-testid=\"repostBtn\"]",
-    "undoRepostMenuItem": "[data-testid=\"repostDropdownUndoBtn\"], [role=\"menuitem\"][aria-label*=\"Undo repost\" i], [data-testid=\"repostDropdownRepostBtn\"]",
-    "itemTimestamp": "a[href*=\"/post/\"][data-tooltip], a[href*=\"/post/\"][aria-label], time[datetime]",
-    "tabPosts": "[role=\"tab\"]:has([data-testid=\"profilePager-Posts\"])",
-    "tabReplies": "[role=\"tab\"]:has([data-testid=\"profilePager-Replies\"])",
-    "tabLikes": "[role=\"tab\"]:has([data-testid=\"profilePager-Likes\"])"
+    "postItem": {
+      "selector": "div[data-testid^=\"feedItem\"]",
+      "intent": "the root container element of a post / feed item"
+    },
+    "repostItem": {
+      "selector": "div[data-testid^=\"feedItem\"]",
+      "intent": "the root container element of a reposted feed item"
+    },
+    "replyItem": {
+      "selector": "div[data-testid^=\"feedItem\"]",
+      "intent": "the root container element of a reply feed item"
+    },
+    "likeItem": {
+      "selector": "div[data-testid^=\"feedItem\"]",
+      "intent": "the root container element of a liked post feed item"
+    },
+    "menuButton": {
+      "selector": "[data-testid=\"postDropdownBtn\"], [aria-label=\"Open post options menu\"]",
+      "intent": "the button that opens a post's options / overflow menu"
+    },
+    "deleteMenuItem": {
+      "selector": "[data-testid=\"postDropdownDeleteBtn\"]",
+      "intent": "the \"Delete post\" item inside the open post options menu"
+    },
+    "deleteConfirm": {
+      "selector": "[data-testid=\"confirmBtn\"]",
+      "intent": "the confirm button in the delete-confirmation dialog"
+    },
+    "unlikeButton": {
+      "selector": "[data-testid=\"likeBtn\"]",
+      "intent": "the like / unlike toggle button on a post"
+    },
+    "repostIndicator": {
+      "selector": "[data-testid=\"feedItem-repostedBy\"], a[href*=\"/profile/\"][aria-label*=\"Reposted\" i], a[aria-label*=\"Reposted by\" i]",
+      "intent": "the \"Reposted by …\" label shown above a reposted feed item"
+    },
+    "repostButton": {
+      "selector": "[data-testid=\"repostBtn\"]",
+      "intent": "the repost button on a post (opens the repost / undo-repost menu)"
+    },
+    "undoRepostMenuItem": {
+      "selector": "[data-testid=\"repostDropdownUndoBtn\"], [role=\"menuitem\"][aria-label*=\"Undo repost\" i], [data-testid=\"repostDropdownRepostBtn\"]",
+      "intent": "the \"Undo repost\" item inside the open repost menu"
+    },
+    "itemTimestamp": {
+      "selector": "a[href*=\"/post/\"][data-tooltip], a[href*=\"/post/\"][aria-label], time[datetime]",
+      "intent": "the element inside a post that carries its date — on Bluesky the post's permalink anchor, whose data-tooltip/aria-label holds the full date as prose (there is no time[datetime] element)"
+    },
+    "tabPosts": {
+      "selector": "[role=\"tab\"]:has([data-testid=\"profilePager-Posts\"])",
+      "intent": "the \"Posts\" tab control in the profile page tab bar"
+    },
+    "tabReplies": {
+      "selector": "[role=\"tab\"]:has([data-testid=\"profilePager-Replies\"])",
+      "intent": "the \"Replies\" tab control in the profile page tab bar"
+    },
+    "tabLikes": {
+      "selector": "[role=\"tab\"]:has([data-testid=\"profilePager-Likes\"])",
+      "intent": "the \"Likes\" tab control in the profile page tab bar"
+    },
+    "dismissControls": {
+      "selector": "[data-testid=\"closeBtn\"], [aria-label=\"Close\"], button[aria-label*=\"Close\" i], button[aria-label*=\"Dismiss\" i]",
+      "intent": "the close / dismiss button of a modal dialog, popup or toast"
+    }
   }
 }

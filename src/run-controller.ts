@@ -46,36 +46,26 @@ export type RunEventListener = (status: RunStatus, lastEvent?: RunEvent) => void
 const SNAPSHOT_MAX_CHARS = 6000;
 /** Cap triage cycles per state check so a persistent block ends in a pause, not a loop. */
 const MAX_TRIAGE_ROUNDS = 4;
+/** Proposals to try per heal before giving up; each is validated against the live DOM. */
+const MAX_HEAL_ROUNDS = 3;
 const TAB_GONE = 'tab closed/navigated';
 
-/** Best-effort close controls for triage `dismiss`; clicked via clickDelete (a bare click primitive). */
-const CLOSE_SELECTORS = [
-  '[data-testid="closeBtn"]',
-  '[aria-label="Close"]',
-  'button[aria-label*="Close" i]',
-  'button[aria-label*="Dismiss" i]',
-];
+/** Selector-map key for the site's modal/toast close controls (triage `dismiss`). */
+const DISMISS_SELECTOR_KEY = 'dismissControls';
 
-/** Plain-language element descriptions for LLM heal prompts, keyed by selector name. */
-const SELECTOR_INTENTS: Record<string, string> = {
-  postItem: 'the root container element of a post / feed item',
-  repostItem: 'the root container element of a reposted feed item',
-  repostIndicator: 'the "Reposted by …" label shown above a reposted feed item',
-  repostButton: 'the repost button on a post (opens the repost / undo-repost menu)',
-  undoRepostMenuItem: 'the "Undo repost" item inside the open repost menu',
-  replyItem: 'the root container element of a reply feed item',
-  likeItem: 'the root container element of a liked post feed item',
-  menuButton: "the button that opens a post's options / overflow menu",
-  deleteMenuItem: 'the "Delete post" item inside the open post options menu',
-  deleteConfirm: 'the confirm button in the delete-confirmation dialog',
-  unlikeButton: 'the like / unlike toggle button on a post',
-  itemTimestamp: 'the post timestamp element (a time[datetime] node)',
-  tabPosts: 'the "Posts" tab control in the profile page tab bar',
-  tabReplies: 'the "Replies" tab control in the profile page tab bar',
-  tabLikes: 'the "Likes" tab control in the profile page tab bar',
-};
+/**
+ * Keys whose element only exists while a menu/dialog is open, in a portal that
+ * is NOT inside the item element — an item-scoped snapshot can never contain
+ * them, so healing these must look at the open overlay instead.
+ */
+const MENU_ONLY_KEYS = new Set(['deleteMenuItem', 'deleteConfirm', 'undoRepostMenuItem']);
 
-const KNOWN_SELECTOR_KEYS = Object.keys(SELECTOR_INTENTS);
+/**
+ * Snapshot anchor for menu-only keys. By the time one of them fails the menu is
+ * typically still open, so this captures the portal that holds it; when nothing
+ * matches (menu already closed) domSnapshot falls back to the whole page body.
+ */
+const OVERLAY_SNAPSHOT_SELECTOR = '[role="menu"], [role="dialog"]';
 
 /**
  * What one category actually did, so a run that "succeeds" while deleting
@@ -90,6 +80,8 @@ interface CategoryOutcome {
   skippedAlreadyLogged: number;
   /** Adapter returned `skipped` — the DOM never offered the delete control. */
   skippedByAdapter: number;
+  /** Items that arrived with no readable timestamp — a broken date selector shows up here. */
+  undated: number;
 }
 
 type Suspicion = 'empty' | 'all-skipped';
@@ -101,7 +93,7 @@ type Suspicion = 'empty' | 'all-skipped';
 type SettledDelete = Exclude<DeleteResult, { status: 'failed' }>;
 
 function newOutcome(): CategoryOutcome {
-  return { enumerated: 0, deleted: 0, skippedAlreadyLogged: 0, skippedByAdapter: 0 };
+  return { enumerated: 0, deleted: 0, skippedAlreadyLogged: 0, skippedByAdapter: 0, undated: 0 };
 }
 
 /**
@@ -141,18 +133,19 @@ function isRpcUnreachable(err: unknown): boolean {
   return messageOf(err).startsWith(RPC_UNREACHABLE_PREFIX);
 }
 
-/** A `failed` DeleteResult whose reason points at a broken selector / vanished element. */
-function indicatesMissingSelector(reason: string): boolean {
-  return /selector|not found|no element|missing|no match|element/i.test(reason);
-}
-
-/** Best-effort recovery of which selector key a string reason refers to. */
-function inferSelectorKey(reason: string): string | undefined {
-  return KNOWN_SELECTOR_KEYS.find((key) => reason.includes(key));
-}
-
-function intentFor(key: string): string {
-  return SELECTOR_INTENTS[key] ?? `the element located by the "${key}" selector`;
+/**
+ * Plain-language description of what a key targets, for the heal prompt. Intents
+ * ship alongside the selectors themselves, so a new key can never be added
+ * without its description; the generic fallback only covers a key that shipped
+ * without one.
+ */
+async function intentFor(site: Site, key: string): Promise<string> {
+  const generic = `the element located by the "${key}" selector`;
+  try {
+    return (await selectorMap.getIntent(site, key)) ?? generic;
+  } catch {
+    return generic;
+  }
 }
 
 function statePageText(state: { modalPresent: boolean; bannerText?: string }): string {
@@ -330,6 +323,10 @@ export class RunController {
     outcome: CategoryOutcome,
     isHealRetry: boolean,
   ): Promise<void> {
+    // A dateless date-filtered category is its own diagnosis; it would otherwise
+    // masquerade as "0 items found" and heal the wrong selector.
+    if (await this.reviewTimestamps(cat, outcome, isHealRetry)) return;
+
     const suspicion = classifySuspicion(outcome);
     if (!suspicion) return;
 
@@ -346,9 +343,58 @@ export class RunController {
     }
   }
 
+  /**
+   * The silent-no-op bug: under a date-bounded filter the adapter refuses to
+   * delete an item it can't date, so a broken timestamp selector filters every
+   * item out and the run deletes nothing while looking like an empty tab. Items
+   * dropped for having no date never reach us, so confirm against the live DOM:
+   * items present + none of them dated ⇒ the timestamp selector is the problem.
+   * Returns true when it owned the diagnosis (suppressing the generic ones).
+   */
+  private async reviewTimestamps(
+    cat: Category,
+    outcome: CategoryOutcome,
+    isHealRetry: boolean,
+  ): Promise<boolean> {
+    const key = this.adapter.timestampSelectorKey;
+    if (!key) return false;
+    if (!this.adapter.supportsDateFilter[cat]) return false;
+    if (this.config.dateFilter.mode === 'all') return false;
+    // Anything dated came through fine — the timestamp selector works.
+    if (outcome.enumerated > outcome.undated) return false;
+
+    const probe = await this.probeTimestamps(cat, key);
+    if (!probe || probe.items === 0 || probe.dated > 0) return false;
+
+    await this.emitEvent(
+      'suspicious',
+      `${cat}: ${probe.items} items on the page but none carry a readable date — the ${key} selector may have changed (a date-filtered run would delete nothing)`,
+    );
+    if (isHealRetry) return true;
+    if (await this.tryHeal(key)) await this.runCategory(cat, true);
+    return true;
+  }
+
+  /** Count live items and how many of them yield a timestamp with the current selectors. */
+  private async probeTimestamps(
+    cat: Category,
+    timestampKey: string,
+  ): Promise<{ items: number; dated: number } | undefined> {
+    try {
+      const selector = await selectorMap.get(this.site, this.adapter.itemSelectorKey[cat]);
+      const timestampSelector = await selectorMap.get(this.site, timestampKey);
+      const nodes = await this.rpc.queryItems({ selector, timestampSelector });
+      return { items: nodes.length, dated: nodes.filter((n) => n.timestamp).length };
+    } catch (err) {
+      this.rethrowControlFlow(err);
+      return undefined;
+    }
+  }
+
   private async processItem(item: Item, cat: Category, outcome: CategoryOutcome): Promise<void> {
     const sig = signatureOf(item);
     outcome.enumerated++;
+    if (!item.timestamp) outcome.undated++;
     if (this.skipSet.has(sig)) {
       outcome.skippedAlreadyLogged++;
       return; // already deleted/gone under this runId
@@ -416,9 +462,10 @@ export class RunController {
     if (result.status !== 'failed') return result;
     if (retried) throw new PauseSignal(`delete failed after recovery: ${result.reason}`);
 
-    if (indicatesMissingSelector(result.reason)) {
-      const key = inferSelectorKey(result.reason);
-      if (!(await this.tryHeal(key, item))) {
+    // The adapter names the selector behind the failure; no name means it is not
+    // a selector problem, and we never guess one from the reason text.
+    if (result.selectorKey) {
+      if (!(await this.tryHeal(result.selectorKey, item))) {
         throw new PauseSignal(`selector repair unavailable: ${result.reason}`);
       }
       return this.deleteWithRecovery(item, true);
@@ -447,35 +494,54 @@ export class RunController {
       failedSelector = key;
     }
 
-    let snapshotHtml: string;
+    const snapshotHtml = await this.snapshotFor(key, item);
+    if (snapshotHtml === undefined) return false;
+    const intent = await intentFor(this.site, key);
+
+    // Each proposal is validated live; a miss is fed back so the next round
+    // can't repeat it. Bounded, so a confused model ends in a pause, not a loop.
+    const rejected: string[] = [];
+    for (let round = 0; round < MAX_HEAL_ROUNDS; round++) {
+      const proposal = await this.deps.llm.healSelector({
+        snapshotHtml,
+        intent,
+        failedSelector,
+        rejected,
+      });
+      if (!proposal) return false;
+
+      let nodes: NodeInfo[] = [];
+      try {
+        nodes = await this.rpc.queryItems({ selector: proposal });
+      } catch (err) {
+        this.rethrowControlFlow(err); // a selector the page rejects counts as a miss
+      }
+      if (nodes.length > 0) {
+        await selectorMap.setOverride(this.site, key, proposal);
+        await this.emitEvent('selector-healed', `${key}: ${failedSelector} → ${proposal}`);
+        return true;
+      }
+      rejected.push(proposal);
+    }
+    return false;
+  }
+
+  /**
+   * Pick what the LLM gets to look at. Menu-only controls live in a portal that
+   * exists only while the menu/dialog is open and never inside the item, so an
+   * item-scoped snapshot of them is guaranteed empty — those anchor on the open
+   * overlay instead, which domSnapshot degrades to the whole page body when the
+   * menu has already closed. Everything else stays item-scoped.
+   */
+  private async snapshotFor(key: string, item?: Item): Promise<string | undefined> {
+    const selector = MENU_ONLY_KEYS.has(key) ? OVERLAY_SNAPSHOT_SELECTOR : item?.elementKey;
     try {
-      const snap = await this.rpc.domSnapshot({ selector: item?.elementKey, maxChars: SNAPSHOT_MAX_CHARS });
-      snapshotHtml = snap.html;
+      const snap = await this.rpc.domSnapshot({ selector, maxChars: SNAPSHOT_MAX_CHARS });
+      return snap.html;
     } catch (err) {
       this.rethrowControlFlow(err);
-      return false;
+      return undefined;
     }
-
-    const proposal = await this.deps.llm.healSelector({
-      snapshotHtml,
-      intent: intentFor(key),
-      failedSelector,
-    });
-    if (!proposal) return false;
-
-    // Validate against the live DOM before caching: it must locate something.
-    let nodes: NodeInfo[];
-    try {
-      nodes = await this.rpc.queryItems({ selector: proposal });
-    } catch (err) {
-      this.rethrowControlFlow(err);
-      return false;
-    }
-    if (nodes.length === 0) return false;
-
-    await selectorMap.setOverride(this.site, key, proposal);
-    await this.emitEvent('selector-healed', `${key}: ${failedSelector} → ${proposal}`);
-    return true;
   }
 
   /**
@@ -516,20 +582,23 @@ export class RunController {
     throw new PauseSignal('unexpected state persisted after triage');
   }
 
-  /** Best-effort modal close: click the first matching close control, then let the loop re-check. */
+  /**
+   * Best-effort modal close: click the first matching close control, then let
+   * the loop re-check. The controls come from the site's selector map (key
+   * `dismissControls`), so they are overridable and healable like any other.
+   */
   private async attemptDismiss(): Promise<void> {
-    for (const selector of CLOSE_SELECTORS) {
-      try {
-        const nodes = await this.rpc.queryItems({ selector });
-        if (nodes.length > 0) {
-          await this.rpc.clickDelete({ menuItemSelector: selector });
-          await this.paced(() => this.pacing.delay(this.abortSignal));
-          return;
-        }
-      } catch (err) {
-        this.rethrowControlFlow(err);
-        // ignore a single bad close selector; try the next
+    try {
+      const selector = await selectorMap.get(this.site, DISMISS_SELECTOR_KEY);
+      const nodes = await this.rpc.queryItems({ selector });
+      if (nodes.length > 0) {
+        await this.rpc.clickDelete({ menuItemSelector: selector });
+        await this.paced(() => this.pacing.delay(this.abortSignal));
+        return;
       }
+    } catch (err) {
+      this.rethrowControlFlow(err);
+      // A missing/bad dismiss selector must not end the run; fall through to the wait.
     }
     // Nothing to click — wait a beat; the next state read decides whether it cleared.
     await this.paced(() => this.pacing.delay(this.abortSignal));

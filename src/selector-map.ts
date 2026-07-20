@@ -7,7 +7,7 @@
  * LLM-heal attempt and, failing that, a pause — that logic is not here.
  */
 import { browser } from 'wxt/browser';
-import type { Site, SelectorMapData, SelectorResolver } from './types';
+import type { Site, SelectorEntry, SelectorMapData, SelectorResolver } from './types';
 import blueskySelectors from './selectors/bluesky.json';
 
 /** Shipped maps, statically imported. Sites not yet shipped are absent. */
@@ -18,15 +18,31 @@ const SHIPPED: Partial<Record<Site, SelectorMapData>> = {
 /** storage.local key holding the override map for a site. */
 const overrideKey = (site: Site): string => `selectorOverrides:${site}`;
 
-/** Thrown when neither an override nor the shipped map resolves a key. */
+/**
+ * Thrown when neither an override nor the shipped map resolves a key — and,
+ * with an explicit `detail`, by callers whose selector resolved but did not
+ * work (e.g. a profile tab that refused to switch). Carrying `key` is what
+ * lets the controller route the failure to the LLM healer instead of pausing.
+ */
 export class SelectorMissingError extends Error {
   constructor(
     readonly site: Site,
     readonly key: string,
+    detail?: string,
   ) {
-    super(`No selector for "${key}" on ${site} (override and shipped both missing)`);
+    super(detail ?? `No selector for "${key}" on ${site} (override and shipped both missing)`);
     this.name = 'SelectorMissingError';
   }
+}
+
+/** Shipped entries may be a bare selector or `{ selector, intent }`; overrides are always bare. */
+function entrySelector(entry: SelectorEntry | undefined): string | undefined {
+  if (typeof entry === 'string') return entry || undefined;
+  return entry?.selector || undefined;
+}
+
+function entryIntent(entry: SelectorEntry | undefined): string | undefined {
+  return typeof entry === 'object' ? entry.intent : undefined;
 }
 
 function requireShipped(site: Site): SelectorMapData {
@@ -72,14 +88,22 @@ export class SelectorMap implements SelectorResolver {
 
     const override = await this.readOverride(site);
     if (override && override.schemaVersion === shipped.schemaVersion) {
-      const selector = override.selectors[key];
+      const selector = entrySelector(override.selectors[key]);
       if (selector) return selector;
     }
 
-    const selector = shipped.selectors[key];
+    const selector = entrySelector(shipped.selectors[key]);
     if (selector) return selector;
 
     throw new SelectorMissingError(site, key);
+  }
+
+  /**
+   * Intents describe the element, not the selector, so they always come from the
+   * shipped map — a healed override replaces the selector but never its meaning.
+   */
+  async getIntent(site: Site, key: string): Promise<string | undefined> {
+    return entryIntent(requireShipped(site).selectors[key]);
   }
 
   async setOverride(site: Site, key: string, selector: string): Promise<void> {

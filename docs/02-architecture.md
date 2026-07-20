@@ -71,7 +71,7 @@ interface SiteAdapter {
 
 ### Selector map — concrete shape and lifecycle
 
-- **Shipped:** `src/selectors/<site>.json` with `{ schemaVersion, selectors: {...} }`.
+- **Shipped:** `src/selectors/<site>.json` with `{ schemaVersion, selectors: {...} }`. Each entry is either a bare selector string or `{ selector, intent }`, where `intent` is the plain-language description handed to the LLM when that selector needs repair — intents live beside their selector so a new key can't be added without one. Site-specific dismiss controls (modal/toast close buttons) live here too, under `dismissControls`.
 - **Runtime overrides:** `chrome.storage.local[selectorOverrides:<site>]` = `{ schemaVersion, selectors }`.
 - **Resolution order:** override (only if `schemaVersion` matches shipped) → shipped → LLM-heal → pause-and-notify.
 - **On extension update:** if shipped `schemaVersion` bumps, overrides for that site are **discarded** (a schema bump signals a site redesign that invalidates old overrides). The discard is appended to the deletion log so the user sees it.
@@ -88,7 +88,13 @@ OpenAI-compatible client with a configurable base URL:
 
 `host_permissions` covers localhost. The LLM is **never in the main loop**. It is invoked in exactly two situations:
 
-1. **Selector self-healing.** A cached selector stops matching (site redesign). The LLM receives a trimmed DOM snapshot around the expected element and proposes a replacement CSS selector. The proposal is validated against the live DOM before being cached into the selector map; on failure, retry with more context, then pause-and-notify.
+1. **Selector self-healing.** A cached selector stops matching (site redesign). The LLM receives a trimmed DOM snapshot around the expected element and proposes a replacement CSS selector. The proposal is validated against the live DOM before being cached into the selector map; up to 3 proposals are tried per heal, each rejected one fed back to the model as "matched nothing", then pause-and-notify.
+
+   Failures reach the healer **structurally, never by parsing prose**: DOM primitives return a `code` (`item-missing` | `trigger-missing` | `timeout` | `bad-selector`) plus the argument that failed; the adapter maps that to either a `skipped` result (`item-missing` — the item legitimately vanished) or `{ status: 'failed', selectorKey }` naming the exact selector-map key to heal. A failed tab switch throws `SelectorMissingError` carrying the tab's key. A `failed` result with no `selectorKey` is a genuine failure: triage once, then pause — the controller never guesses a key.
+
+   Menu-only keys (`deleteMenuItem`, `deleteConfirm`, `undoRepostMenuItem`) render in a portal that exists only while the menu is open and is never inside the item element, so their heal snapshot anchors on the open overlay (`[role="menu"], [role="dialog"]`, degrading to the page body) instead of the item.
+
+   The controller also heals `itemTimestamp`: under a date-bounded filter, items with no readable date are never deleted, so a category whose live items all lack a timestamp emits `suspicious` and heals that key before retrying the category once.
 2. **Unexpected-state triage.** The page shows something unplanned (modal, rate-limit banner, captcha, logged-out state). The LLM receives trimmed page text/DOM and must answer with one of a **fixed enum** of recovery actions: `dismiss`, `backoff`, `pause_for_human`, `abort`. No free-form actions.
 
 Both jobs run comfortably on 7–14B local models. If no LLM endpoint is configured or reachable, the extension still works — it just pauses and notifies the human instead of self-healing.

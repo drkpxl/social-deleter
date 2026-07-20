@@ -1,0 +1,14 @@
+# Local agent/tooling files — not part of the project
+.claude/
+.agents/
+skills-lock.json
+CLAUDE.md
+CLAUDE-*.md
+
+# OS
+.DS_Store
+
+# Node (for when the extension scaffold lands)
+node_modules/
+.output/
+.wxt/

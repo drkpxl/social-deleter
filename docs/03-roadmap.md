@@ -2,15 +2,26 @@
 
 ## Phase 1 — Bluesky (the training ground)
 
-Build the entire skeleton against the friendliest target:
+Build the entire skeleton against the friendliest target. Tasks are ordered for incremental verification:
 
-- WXT + TypeScript project scaffold, side panel UI, thin service worker.
-- `SiteAdapter` interface + Bluesky adapter (posts, replies, likes; date filter).
-- Pacing engine, Stop handling, append-only deletion log + resume.
-- LLM client (Ollama / LM Studio) with both fallback jobs wired in.
-- **Validation gate:** intentionally break selectors in the map and confirm the LLM repairs them against the live site; kill the run mid-way and confirm resume from the log.
+1. **Scaffold.** `npm create wxt@latest`, TypeScript strict, side panel entry, content script entry, service worker. `.gitignore`, GitHub Actions release workflow (tag → `wxt build` → zip → GH release).
+2. **Messaging RPC.** Tiny typed `chrome.runtime` port wrapper: `call(tabId, method, args) -> Promise<result>`. One file, no framework.
+3. **DomPrimitives (Bluesky).** Content script, stateless: `scroll({direction, amount})`, `enumerate({selector}) -> NodeInfo[]`, `openMenu({itemSelector})`, `clickDelete({menuSelector})`, `readState() -> {url, scrollY, modalPresent, bannerText?}`. No business logic.
+4. **SelectorMap + shipped Bluesky selectors.** `src/selectors/bluesky.json` v1. Resolution (override → shipped → LLM-heal → pause) + override store in `chrome.storage.local`. Schema-version bump on update discards overrides; logged.
+5. **PacingEngine.** Randomized base delay per action + exponential backoff on `backoff` signal. Configurable per-site via `PacingProfile`.
+6. **DeletionLog.** Append-only to `chrome.storage.local` keyed by `runId`. Read-back for resume.
+7. **Bluesky adapter (panel-side).** `enumerate`/`deleteItem` for posts, replies, likes. URL discovery during enumeration (URLs are not assumed — they're found as part of the process). Date filter for posts + replies; disabled for likes.
+8. **RunController.** Start (pin active tab id), Stop (clean abort between items), resume-from-log on Start if a prior `runId` is incomplete.
+9. **Panel UI.** Category checkboxes, date filter (auto-disables when only Likes is checked), Delete / Stop buttons, progress bar, live log view. Mobile-responsive (reviewed on mobile first).
+10. **LlmClient.** Configurable base URL + model. Two jobs: `healSelector({snapshot, intent}) -> selector` (validated against live DOM before caching), `triageState({pageText}) -> 'dismiss'|'backoff'|'pause_for_human'|'abort'`. Graceful absence (no endpoint → pause-and-notify).
+11. **Validation gate** (replaces automated tests — DOM automation is hard to unit-test):
+    - Full run: all 3 categories, date-filtered, on a test account.
+    - Force-break a selector mid-run → confirm LLM heals it (or pause-and-notify if no LLM).
+    - Kill run mid-way → restart → confirm resume skips deleted items.
+    - Close pinned tab mid-run → confirm pause-and-notify.
+    - Likes-only run with date filter → confirm UI disables date filter.
 
-**Done when:** a full delete run (all three categories, date-filtered) completes on a test Bluesky account, survives a forced selector break, and resumes after a forced stop.
+**Done when** all 5 validation-gate items pass on a test Bluesky account.
 
 ## Phase 2 — X
 
@@ -32,6 +43,7 @@ Build the entire skeleton against the friendliest target:
 
 - Public GitHub repo, release ZIPs of the built extension.
 - Illustrated README walkthrough for non-technical users (load-unpacked flow).
+- **Release workflow:** GitHub Action on `v*` tag — `npm ci && wxt build && zip -r social-deleter-${tag}.zip .output/chrome-mv3`. Release notes auto-generated from commit range. Lets selector fixes ship the hour a site redesign breaks them, with no store review gate.
 
 ## Explicitly out of v1
 

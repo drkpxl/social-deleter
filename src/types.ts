@@ -182,5 +182,5 @@ export interface RunConfig {
 export type RunStatus =
   | { state: 'idle' }
   | { state: 'running'; runId: string; deleted: number; category: Category }
-  | { state: 'paused'; runId: string; reason: string }
+  | { state: 'paused'; runId: string; reason: string; deleted: number }
   | { state: 'done'; runId: string; deleted: number };

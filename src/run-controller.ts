@@ -159,7 +159,9 @@ export class RunController {
   }
 
   private async beginRun(config: RunConfig, isResume: boolean): Promise<void> {
-    if (this.active) throw new Error('a run is already in progress');
+    // A double-invoke is a no-op, not a rejection: start()/resume() must never
+    // reject, so fire-and-forget callers can't produce an unhandled rejection.
+    if (this.active) return;
     this.active = true;
 
     this.config = config;
@@ -203,18 +205,18 @@ export class RunController {
   /** Turn a loop-ending throw into the right terminal status + event. Never rethrows. */
   private async handleTerminal(err: unknown): Promise<void> {
     if (err instanceof StopSignal) {
-      this.setStatus({ state: 'paused', runId: this.runId, reason: err.reason });
+      this.setStatus({ state: 'paused', runId: this.runId, reason: err.reason, deleted: this.deleted });
       await this.emitEvent('stopped', err.reason);
       return;
     }
     if (err instanceof PauseSignal) {
-      this.setStatus({ state: 'paused', runId: this.runId, reason: err.reason });
+      this.setStatus({ state: 'paused', runId: this.runId, reason: err.reason, deleted: this.deleted });
       await this.emitEvent('paused', err.reason);
       return;
     }
     // Unexpected: pause (resumable) and record it so the user sees why.
     const reason = messageOf(err);
-    this.setStatus({ state: 'paused', runId: this.runId, reason });
+    this.setStatus({ state: 'paused', runId: this.runId, reason, deleted: this.deleted });
     await this.emitEvent('error', reason);
   }
 

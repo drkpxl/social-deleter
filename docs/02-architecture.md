@@ -86,13 +86,43 @@ site-agnostic. Threads also ships no `data-testid` and mangles its class names p
 which is why the `clickByText` primitive exists: its delete menu item and its confirm-dialog
 buttons are identifiable only by their visible text.
 
+### Not every item on a category page is yours
+
+A category page is not a list of deletable items, and assuming otherwise is the most
+expensive mistake available here:
+
+- Bluesky's **Posts** tab interleaves reposts of other people's posts.
+- Threads' **Replies** route interleaves the *parent* posts you replied to — verified live at
+  4 containers for 2 owned replies.
+
+Both are handled the same way: `queryItems` takes `probes` (name → selector evaluated inside
+each node) and the adapter filters on the result — `repostIndicator` on Bluesky, a
+`a[href="/@<handle>"]` ownership link on Threads. Skipping this doesn't just waste time; the
+run opens other people's posts, finds no delete control, and emits a stream of skips that can
+trip the all-skipped heuristic into "repairing" selectors that were never broken.
+
+### A successful delete does not always change the DOM
+
+Bluesky removes the node; **Threads leaves it in place until the page reloads**. So the
+completed click sequence is the only portable success signal. Any post-delete assertion that
+the node vanished would report a false failure on every successful Threads deletion — and
+those false failures feed the healer. Re-encountering a lingering node during continued
+enumeration is expected and absorbed by the content-signature skip-set.
+
 `enumerate` is a panel-side async generator that calls DOM primitives (`scroll`, `queryItems`) over the messaging port and yields `Item`s. Iteration state lives in the generator closure — it survives tab reloads because the generator is in the panel, not the content script.
 
 ### Date filter
 
 - Modes: `all` | `olderThan: Date` | `range: [Date, Date]`.
-- Per-category `supportsDateFilter`. Likes = `false` on all sites (likes views don't render timestamps; navigating into each liked post for its date is too slow and too suspicious for v1).
-- UI: when only Likes is checked, the date filter controls disable themselves.
+- Per-category `supportsDateFilter`, declared by each site's registration:
+  - **Bluesky** — posts/replies `true`; likes `false` (the likes view renders no timestamp, and
+    opening each liked post to read its date is too slow and too conspicuous); reposts `false`
+    (the DOM shows the original post's date, not when you reposted).
+  - **Threads** — posts/replies/reposts all `true` (real `time[datetime]`); likes not offered.
+- UI: the date controls disable themselves when *no* selected category supports filtering.
+- **Items with no readable date never match a bounded filter** — we do not delete what we can't
+  date. That makes a broken timestamp selector silently delete nothing, so the controller treats
+  "items found but none carry a date" as suspicious and heals `itemTimestamp`.
 
 ### Selector map — concrete shape and lifecycle
 

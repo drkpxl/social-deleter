@@ -54,9 +54,23 @@ Threads specifics that shaped the port:
 Verified on a live account: item root, permalink, `time[datetime]`, `More` menu, the `Delete`
 menu item, the `Delete post?` confirm dialog (two text-only buttons), and one real deletion.
 
-**Still to verify:** the undo-repost menu label (`undoRepostMenuItem` — "Remove"/"Unrepost"),
-`dismissControls`, a multi-hour sustained run (backoff behaviour under Meta rate limiting),
-replies/reposts routes at scale, and resume across a Threads run.
+**Verified on the live account** by performing one real deletion of each type:
+
+- Post delete, reply delete: `More` → `[role="menuitem"]` "Delete" → confirm dialog "Delete".
+- Undo-repost: the Repost control opens a menu of exactly **"Remove"** and "Quote", and Remove
+  takes effect with **no confirmation dialog** — code that waited for one would hang on every repost.
+- The confirm dialog's "Delete" and "Cancel" are both bare `[role="button"]` divs distinguishable
+  only by text, so exact text matching is load-bearing, not a nicety.
+- The `/replies` route **interleaves other authors' parent posts** with your own replies (4
+  containers for 2 owned replies). Enumeration probes `a[href="/@<handle>"]` for ownership;
+  without it a run opens strangers' posts, finds no Delete, and emits a stream of skips —
+  which could then trip the all-skipped heuristic into "repairing" selectors that were fine.
+
+**Still to verify:** `dismissControls` (triage's modal-close selector), a multi-hour sustained run
+(backoff under Meta rate limiting), lazy-load scrolling to exhaustion on a large profile
+(`ROUTE_SETTLE_MS` 2500 is a guess), and resume across a Threads run. Threads also has no known
+not-found marker, so a bad route enumerates 0 items and surfaces as `suspicious` rather than a
+clear error.
 
 **Done when:** parity with Phase 2 criteria on Threads.
 

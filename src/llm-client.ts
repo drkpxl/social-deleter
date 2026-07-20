@@ -1,0 +1,200 @@
+/**
+ * LLM client — fallback-only, two jobs (selector self-healing + state triage).
+ * See docs/02-architecture.md "LLM integration (fallback-only, two jobs)".
+ *
+ * Talks to any OpenAI-compatible chat-completions endpoint (Ollama, LM Studio)
+ * over plain `fetch` — no SDK. The LLM is never in the main loop; every path
+ * degrades to a safe default (null selector / pause_for_human) so a missing or
+ * unreachable endpoint just falls back to pause-and-notify.
+ */
+import { browser } from 'wxt/browser';
+import type { LlmClient, LlmConfig, TriageAction } from './types';
+
+/** storage.local key holding the single LLM endpoint config. */
+const LLM_CONFIG_KEY = 'llmConfig';
+
+/** Chat requests can run a local 7–14B model for a while; give it room. */
+const CHAT_TIMEOUT_MS = 60_000;
+/** Reachability probe must be snappy — it gates whether we even try. */
+const PROBE_TIMEOUT_MS = 3_000;
+
+/** A pathological model reply is never a real selector; reject early. */
+const MAX_SELECTOR_CHARS = 300;
+
+const TRIAGE_ACTIONS: readonly TriageAction[] = [
+  'dismiss',
+  'backoff',
+  'pause_for_human',
+  'abort',
+];
+
+const HEAL_SYSTEM_PROMPT = [
+  'You are repairing a broken CSS selector for a browser-automation tool.',
+  'You are given a trimmed HTML snapshot of the page, the selector that stopped',
+  'matching, and a plain-language description of the element it should target.',
+  'Return a replacement CSS selector that a standard `document.querySelector`',
+  'would accept and that locates the described element in the snapshot.',
+  'Reply with ONLY the selector — a single line, no prose, no explanation,',
+  'no code fences, no surrounding quotes.',
+].join(' ');
+
+/** Sent after a malformed reply to nudge the model back to the contract. */
+const HEAL_CORRECTION_PROMPT = [
+  'That reply was not a single valid CSS selector.',
+  'Reply again with ONLY one valid CSS selector on a single line —',
+  'no prose, no code fences, no quotes.',
+].join(' ');
+
+const TRIAGE_SYSTEM_PROMPT = [
+  'You classify an unexpected page state for a deletion-automation tool and pick',
+  'exactly one recovery action. Reply with ONLY one of these four words, nothing',
+  'else:',
+  '- dismiss: a benign modal/popup/toast that can simply be closed.',
+  '- backoff: a rate-limit or transient error; wait and retry.',
+  '- pause_for_human: a captcha, login/logged-out wall, or anything that needs a human.',
+  '- abort: an unrecoverable state.',
+].join('\n');
+
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+/** Trim a trailing slash so `${baseUrl}/chat/completions` never doubles up. */
+function endpoint(baseUrl: string, path: string): string {
+  return `${baseUrl.replace(/\/+$/, '')}${path}`;
+}
+
+/**
+ * POST a chat-completions request and return the assistant text. Throws on
+ * timeout, network error, non-2xx, or a response missing the message content —
+ * callers map those to their own safe defaults.
+ */
+async function chatCompletion(config: LlmConfig, messages: ChatMessage[]): Promise<string> {
+  const res = await fetch(endpoint(config.baseUrl, '/chat/completions'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: config.model, temperature: 0, messages }),
+    signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`chat/completions returned HTTP ${res.status}`);
+
+  const data = (await res.json()) as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (typeof content !== 'string') throw new Error('chat/completions response had no text content');
+  return content;
+}
+
+/**
+ * Syntax-only validity check. Live-DOM matching is the caller's job; here we
+ * only reject selectors the parser can't even accept. `document` is absent in
+ * some worker contexts, where we cannot disprove validity — accept and let the
+ * caller's live-DOM check catch a bad selector.
+ */
+function isValidSelectorSyntax(selector: string): boolean {
+  if (typeof document === 'undefined') return true;
+  try {
+    document.createDocumentFragment().querySelector(selector);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pull a plausible CSS selector out of a raw model reply: strip code fences,
+ * take the first non-empty line, drop wrapping quotes/backticks. Returns null
+ * when the result is empty, implausibly long, or syntactically invalid.
+ */
+function parseSelector(raw: string): string | null {
+  const withoutFences = raw.replace(/```[a-zA-Z]*\n?/g, '').replace(/```/g, '');
+  const firstLine =
+    withoutFences
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? '';
+  const selector = firstLine.replace(/^['"`]+|['"`]+$/g, '').trim();
+
+  if (!selector || selector.length > MAX_SELECTOR_CHARS) return null;
+  if (!isValidSelectorSyntax(selector)) return null;
+  return selector;
+}
+
+/** Strict enum parse: normalize, then match a bare action word. Else null. */
+function parseTriageAction(raw: string): TriageAction | null {
+  const firstLine = raw.trim().split('\n')[0] ?? '';
+  const normalized = firstLine.toLowerCase().replace(/[^a-z_]/g, '');
+  return TRIAGE_ACTIONS.includes(normalized as TriageAction)
+    ? (normalized as TriageAction)
+    : null;
+}
+
+export function createLlmClient(config: LlmConfig): LlmClient {
+  return {
+    async available(): Promise<boolean> {
+      try {
+        const res = await fetch(endpoint(config.baseUrl, '/models'), {
+          method: 'GET',
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+
+    async healSelector(args): Promise<string | null> {
+      const userMessage = [
+        `Intent: ${args.intent}`,
+        `Broken selector: ${args.failedSelector}`,
+        'HTML snapshot:',
+        args.snapshotHtml,
+      ].join('\n');
+
+      const messages: ChatMessage[] = [
+        { role: 'system', content: HEAL_SYSTEM_PROMPT },
+        { role: 'user', content: userMessage },
+      ];
+
+      // One corrective retry on malformed output; any request failure ends it.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let reply: string;
+        try {
+          reply = await chatCompletion(config, messages);
+        } catch {
+          return null;
+        }
+        const selector = parseSelector(reply);
+        if (selector) return selector;
+        messages.push({ role: 'assistant', content: reply });
+        messages.push({ role: 'user', content: HEAL_CORRECTION_PROMPT });
+      }
+      return null;
+    },
+
+    async triageState(args): Promise<TriageAction> {
+      const messages: ChatMessage[] = [
+        { role: 'system', content: TRIAGE_SYSTEM_PROMPT },
+        { role: 'user', content: args.pageText },
+      ];
+      try {
+        const reply = await chatCompletion(config, messages);
+        // pause_for_human is the safe default for anything unparseable.
+        return parseTriageAction(reply) ?? 'pause_for_human';
+      } catch {
+        return 'pause_for_human';
+      }
+    },
+  };
+}
+
+export async function loadLlmConfig(): Promise<LlmConfig | null> {
+  const stored = await browser.storage.local.get(LLM_CONFIG_KEY);
+  return (stored[LLM_CONFIG_KEY] as LlmConfig | undefined) ?? null;
+}
+
+export async function saveLlmConfig(config: LlmConfig): Promise<void> {
+  await browser.storage.local.set({ [LLM_CONFIG_KEY]: config });
+}

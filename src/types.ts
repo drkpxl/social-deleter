@@ -62,6 +62,8 @@ export interface DomPrimitives {
   ping(): Promise<'pong'>;
   scroll(args: { direction: 'down' | 'up'; amountPx?: number }): Promise<{ scrolledPx: number; atEnd: boolean }>;
   queryItems(args: { selector: string }): Promise<NodeInfo[]>;
+  /** Poll for `selector`, click it. Used for the likes/unlike toggle (no menu). */
+  click(args: { selector: string }): Promise<PrimitiveResult>;
   openMenu(args: { itemSelector: string; menuButtonSelector: string }): Promise<PrimitiveResult>;
   clickDelete(args: { menuItemSelector: string; confirmSelector?: string }): Promise<PrimitiveResult>;
   /** Return a trimmed outerHTML snapshot around `selector` (or viewport if omitted) for LLM repair. */

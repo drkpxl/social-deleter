@@ -76,7 +76,10 @@ export function createDomPrimitives(): DomPrimitives {
     async queryItems({ selector }) {
       const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
       return nodes.map((node): NodeInfo => {
-        const key = String(keyCounter++);
+        // Reuse an existing key so elementKey stays stable across calls — the
+        // heal-retry path re-queries between yield and delete and must not
+        // restamp the very node it is about to act on.
+        const key = node.getAttribute('data-sd-key') ?? String(keyCounter++);
         node.setAttribute('data-sd-key', key);
         const info: NodeInfo = {
           elementKey: `[data-sd-key="${key}"]`,
@@ -98,6 +101,13 @@ export function createDomPrimitives(): DomPrimitives {
       button.click();
       const appeared = await pollFor(() => document.querySelector('[role="menu"]') !== null, 500);
       return appeared ? { ok: true } : { ok: false, reason: 'menu did not appear' };
+    },
+
+    async click({ selector }): Promise<PrimitiveResult> {
+      const el = await pollForElement(selector, 3000);
+      if (!el) return { ok: false, reason: `element not found: ${selector}` };
+      el.click();
+      return { ok: true };
     },
 
     async clickDelete({ menuItemSelector, confirmSelector }): Promise<PrimitiveResult> {

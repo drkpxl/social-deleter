@@ -14,7 +14,13 @@ import type { LlmClient, LlmConfig, TriageAction } from './types';
 const LLM_CONFIG_KEY = 'llmConfig';
 
 /** Chat requests can run a local 7–14B model for a while; give it room. */
-const CHAT_TIMEOUT_MS = 60_000;
+/**
+ * Measured against a local Ollama 4B model on a ~6KB snapshot: a warm repair
+ * lands in ~20s, but a cold start (or a model swap between requests) can exceed
+ * 180s. Healing only runs when the alternative is pausing the run, so waiting is
+ * strictly better than giving up — hence a far longer cap than a UI would use.
+ */
+const CHAT_TIMEOUT_MS = 240_000;
 /** Reachability probe must be snappy — it gates whether we even try. */
 const PROBE_TIMEOUT_MS = 3_000;
 
@@ -155,6 +161,30 @@ export function createLlmClient(config: LlmConfig): LlmClient {
         const res = await fetch(endpoint(config.baseUrl, '/models'), {
           method: 'GET',
           signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    },
+
+    /**
+     * Send a trivial completion so the server loads the model into memory. A
+     * cold first heal can take minutes while the model loads; doing it up front
+     * (from the settings "Test" button) keeps the first real repair fast.
+     */
+    async warmUp(): Promise<boolean> {
+      try {
+        const res = await fetch(endpoint(config.baseUrl, '/chat/completions'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: config.model,
+            temperature: 0,
+            max_tokens: 1,
+            messages: [{ role: 'user', content: 'ok' }],
+          }),
+          signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
         });
         return res.ok;
       } catch {

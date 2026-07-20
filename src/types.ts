@@ -208,6 +208,8 @@ export interface LlmClient {
   }): Promise<string | null>;
   triageState(args: { pageText: string }): Promise<TriageAction>;
   available(): Promise<boolean>;
+  /** Preload the model so the first real heal doesn't pay a cold start. */
+  warmUp(): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------

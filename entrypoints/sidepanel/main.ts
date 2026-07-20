@@ -431,9 +431,18 @@ async function onLlmSave(): Promise<void> {
 async function onLlmTest(): Promise<void> {
   const config = llmInputs();
   if (!config) return;
-  el('llm-status').textContent = 'Testing…';
-  const reachable = await createLlmClient(config).available();
-  el('llm-status').textContent = reachable ? 'Reachable ✓' : 'Unreachable ✗';
+  const note = el('llm-status');
+  note.textContent = 'Testing…';
+  const client = createLlmClient(config);
+  if (!(await client.available())) {
+    note.textContent = 'Unreachable ✗';
+    return;
+  }
+  // Loading the model can take minutes on a cold server; do it now rather than
+  // during the first repair, when a run is stalled waiting on it.
+  note.textContent = 'Reachable ✓ — loading model…';
+  const warm = await client.warmUp();
+  note.textContent = warm ? 'Reachable ✓ — model loaded and ready' : 'Reachable ✓ — model did not load (repairs may be slow)';
 }
 
 // ---------------------------------------------------------------------------

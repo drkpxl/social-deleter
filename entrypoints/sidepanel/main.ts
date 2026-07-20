@@ -8,7 +8,7 @@
 import './style.css';
 import { createBlueskyAdapter, SUPPORTS_DATE_FILTER } from '@/src/adapters/bluesky';
 import { DeletionLog } from '@/src/deletion-log';
-import { createLlmClient, loadLlmConfig, saveLlmConfig } from '@/src/llm-client';
+import { createLlmClient, loadLlmConfig, probeChat, saveLlmConfig } from '@/src/llm-client';
 import { DEFAULT_BLUESKY_PACING, PacingEngine } from '@/src/pacing';
 import { RunController } from '@/src/run-controller';
 import { newRunId } from '@/src/run-id';
@@ -432,17 +432,11 @@ async function onLlmTest(): Promise<void> {
   const config = llmInputs();
   if (!config) return;
   const note = el('llm-status');
-  note.textContent = 'Testing…';
-  const client = createLlmClient(config);
-  if (!(await client.available())) {
-    note.textContent = 'Unreachable ✗';
-    return;
-  }
-  // Loading the model can take minutes on a cold server; do it now rather than
-  // during the first repair, when a run is stalled waiting on it.
-  note.textContent = 'Reachable ✓ — loading model…';
-  const warm = await client.warmUp();
-  note.textContent = warm ? 'Reachable ✓ — model loaded and ready' : 'Reachable ✓ — model did not load (repairs may be slow)';
+  // Probes a real completion, not just that the server is up — and it doubles as
+  // a model preload, so the first repair doesn't pay a cold start.
+  note.textContent = 'Testing (loading the model may take a minute)…';
+  const probe = await probeChat(config);
+  note.textContent = probe.ok ? 'Ready ✓ — model answered and is loaded' : `Not usable ✗ — ${probe.hint ?? 'unknown error'}`;
 }
 
 // ---------------------------------------------------------------------------

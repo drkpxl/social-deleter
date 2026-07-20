@@ -516,12 +516,20 @@ export class RunController {
       } catch (err) {
         this.rethrowControlFlow(err); // a selector the page rejects counts as a miss
       }
-      if (nodes.length > 0) {
+      // "Matched something" is not good enough for a key that names ONE control:
+      // an over-broad proposal validates fine and then acts on the wrong element.
+      const mustBeUnique = await selectorMap.isUnique(this.site, key);
+      const acceptable = mustBeUnique ? nodes.length === 1 : nodes.length > 0;
+      if (acceptable) {
         await selectorMap.setOverride(this.site, key, proposal);
         await this.emitEvent('selector-healed', `${key}: ${failedSelector} → ${proposal}`);
         return true;
       }
-      rejected.push(proposal);
+      rejected.push(
+        mustBeUnique && nodes.length > 1
+          ? `${proposal} (matched ${nodes.length} elements; must match exactly one)`
+          : proposal,
+      );
     }
     return false;
   }

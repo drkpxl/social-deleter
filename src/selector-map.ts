@@ -106,6 +106,12 @@ export class SelectorMap implements SelectorResolver {
     return entryIntent(requireShipped(site).selectors[key]);
   }
 
+  /** Like intents, uniqueness describes the element and always comes from the shipped map. */
+  async isUnique(site: Site, key: string): Promise<boolean> {
+    const entry = requireShipped(site).selectors[key];
+    return typeof entry === 'object' && entry.unique === true;
+  }
+
   async setOverride(site: Site, key: string, selector: string): Promise<void> {
     const shipped = requireShipped(site);
     const override = await this.readOverride(site);

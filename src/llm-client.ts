@@ -8,6 +8,7 @@
  * unreachable endpoint just falls back to pause-and-notify.
  */
 import { browser } from 'wxt/browser';
+import { messageOf } from './errors';
 import type { LlmClient, LlmConfig, TriageAction } from './types';
 
 /** storage.local key holding the single LLM endpoint config. */
@@ -88,6 +89,43 @@ function endpoint(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}${path}`;
 }
 
+export interface LlmProbe {
+  ok: boolean;
+  status?: number;
+  /** Actionable message when the server is up but refusing us. */
+  hint?: string;
+}
+
+/**
+ * Send the smallest possible completion to prove the endpoint will actually
+ * answer requests from this extension. Doubles as a model preload.
+ */
+export async function probeChat(config: LlmConfig, timeoutMs = CHAT_TIMEOUT_MS): Promise<LlmProbe> {
+  try {
+    const res = await fetch(endpoint(config.baseUrl, '/chat/completions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: config.model,
+        temperature: 0,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'ok' }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.ok) return { ok: true, status: res.status };
+    // 403 from a reachable server is nearly always an origin allowlist: Ollama
+    // and LM Studio both refuse cross-origin POSTs until configured.
+    const hint =
+      res.status === 403
+        ? 'The server refused this extension (403). Ollama: restart it with OLLAMA_ORIGINS="chrome-extension://*". LM Studio: enable CORS in its server settings.'
+        : `The server answered ${res.status}. Check the model name is exactly one the server has loaded.`;
+    return { ok: false, status: res.status, hint };
+  } catch (err) {
+    return { ok: false, hint: `Could not reach ${config.baseUrl} — ${messageOf(err)}` };
+  }
+}
+
 /**
  * POST a chat-completions request and return the assistant text. Throws on
  * timeout, network error, non-2xx, or a response missing the message content —
@@ -156,16 +194,15 @@ function parseTriageAction(raw: string): TriageAction | null {
 
 export function createLlmClient(config: LlmConfig): LlmClient {
   return {
+    /**
+     * Probe the capability we actually need — a chat completion — not just that
+     * the server answers. Ollama happily serves GET /models to any origin while
+     * rejecting POST /chat/completions with 403 unless OLLAMA_ORIGINS allows the
+     * extension, so a GET probe reports "reachable" for a server that can never
+     * heal anything.
+     */
     async available(): Promise<boolean> {
-      try {
-        const res = await fetch(endpoint(config.baseUrl, '/models'), {
-          method: 'GET',
-          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-        });
-        return res.ok;
-      } catch {
-        return false;
-      }
+      return (await probeChat(config)).ok;
     },
 
     /**

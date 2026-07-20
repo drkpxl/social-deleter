@@ -1,5 +1,5 @@
 {
-  "_note": "VERIFIED against live bsky.app (logged in) via DOM inspection: item roots are data-testid=\"feedItem-by-<handle>\"; profile tabs are CLIENT-SIDE (the URL never changes) and are reached by clicking [role=\"tab\"]:has([data-testid=\"profilePager-<Label>\"]); posts/reposts/likes deletion controls confirmed working. Bluesky has NO <time datetime> — the date lives in the permalink anchor's data-tooltip/aria-label as prose (e.g. \"July 19, 2026 at 4:56 PM\"). Unverified: undoRepostMenuItem's exact testid (menu-only). Each entry is either a bare selector string or { selector, intent }; the intent is the plain-language description handed to the LLM when the selector needs repair, so it lives beside the selector rather than in a mirrored table in code.",
+  "_note": "VERIFIED against live bsky.app (logged in) via DOM inspection: item roots are data-testid=\"feedItem-by-<handle>\"; profile tabs are CLIENT-SIDE (the URL never changes) and are reached by clicking [role=\"tab\"]:has([data-testid=\"profilePager-<Label>\"]); posts/reposts/likes deletion controls confirmed working. Bluesky has NO <time datetime> \u2014 the date lives in the permalink anchor's data-tooltip/aria-label as prose (e.g. \"July 19, 2026 at 4:56 PM\"). Unverified: undoRepostMenuItem's exact testid (menu-only). Each entry is either a bare selector string or { selector, intent }; the intent is the plain-language description handed to the LLM when the selector needs repair, so it lives beside the selector rather than in a mirrored table in code.",
   "schemaVersion": 2,
   "selectors": {
     "postItem": {
@@ -28,7 +28,8 @@
     },
     "deleteConfirm": {
       "selector": "[data-testid=\"confirmBtn\"]",
-      "intent": "the confirm button in the delete-confirmation dialog"
+      "intent": "the confirm button in the delete-confirmation dialog",
+      "unique": true
     },
     "unlikeButton": {
       "selector": "[data-testid=\"likeBtn\"]",
@@ -36,7 +37,7 @@
     },
     "repostIndicator": {
       "selector": "[data-testid=\"feedItem-repostedBy\"], a[href*=\"/profile/\"][aria-label*=\"Reposted\" i], a[aria-label*=\"Reposted by\" i]",
-      "intent": "the \"Reposted by …\" label shown above a reposted feed item"
+      "intent": "the \"Reposted by \u2026\" label shown above a reposted feed item"
     },
     "repostButton": {
       "selector": "[data-testid=\"repostBtn\"]",
@@ -48,19 +49,22 @@
     },
     "itemTimestamp": {
       "selector": "a[href*=\"/post/\"][data-tooltip], a[href*=\"/post/\"][aria-label], time[datetime]",
-      "intent": "the element inside a post that carries its date — on Bluesky the post's permalink anchor, whose data-tooltip/aria-label holds the full date as prose (there is no time[datetime] element)"
+      "intent": "the element inside a post that carries its date \u2014 on Bluesky the post's permalink anchor, whose data-tooltip/aria-label holds the full date as prose (there is no time[datetime] element)"
     },
     "tabPosts": {
       "selector": "[role=\"tab\"]:has([data-testid=\"profilePager-Posts\"])",
-      "intent": "the \"Posts\" tab control in the profile page tab bar"
+      "intent": "the \"Posts\" tab control in the profile page tab bar",
+      "unique": true
     },
     "tabReplies": {
       "selector": "[role=\"tab\"]:has([data-testid=\"profilePager-Replies\"])",
-      "intent": "the \"Replies\" tab control in the profile page tab bar"
+      "intent": "the \"Replies\" tab control in the profile page tab bar",
+      "unique": true
     },
     "tabLikes": {
       "selector": "[role=\"tab\"]:has([data-testid=\"profilePager-Likes\"])",
-      "intent": "the \"Likes\" tab control in the profile page tab bar"
+      "intent": "the \"Likes\" tab control in the profile page tab bar",
+      "unique": true
     },
     "dismissControls": {
       "selector": "[data-testid=\"closeBtn\"], [aria-label=\"Close\"], button[aria-label*=\"Close\" i], button[aria-label*=\"Dismiss\" i]",

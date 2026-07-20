@@ -119,7 +119,19 @@ export type RpcResponse =
  * healing for exactly the key someone forgot to mirror).
  * Stored overrides only ever use the bare-string form.
  */
-export type SelectorEntry = string | { selector: string; intent?: string };
+export type SelectorEntry =
+  | string
+  | {
+      selector: string;
+      intent?: string;
+      /**
+       * True when the key names ONE control on the page (a tab, a confirm button).
+       * A healed selector for such a key must match exactly one element: a broader
+       * proposal passes a "matched something" check but then acts on the wrong
+       * element — e.g. `[role="tab"]` matches every tab and clicks whichever is first.
+       */
+      unique?: boolean;
+    };
 
 export interface SelectorMapData {
   schemaVersion: number;
@@ -132,6 +144,8 @@ export interface SelectorResolver {
   get(site: Site, key: string): Promise<string>;
   /** Plain-language description of what a key targets, for LLM heal prompts. */
   getIntent(site: Site, key: string): Promise<string | undefined>;
+  /** Whether a healed selector for this key must match exactly one element. */
+  isUnique(site: Site, key: string): Promise<boolean>;
   /** Persist an LLM-healed selector; takes effect immediately. */
   setOverride(site: Site, key: string, selector: string): Promise<void>;
 }

@@ -21,6 +21,7 @@ import type {
 import { createRpcClient } from '../rpc';
 import { selectorMap } from '../selector-map';
 import { signatureOf } from '../deletion-log';
+import { navigateTab } from '../navigation';
 import { DEFAULT_BLUESKY_PACING } from '../pacing';
 
 const SITE: Site = 'bluesky';
@@ -28,12 +29,55 @@ const SITE: Site = 'bluesky';
 /** Item-root selector key per category (resolved via the selector map). */
 const ITEM_SELECTOR_KEY: Record<Category, string> = {
   posts: 'postItem',
+  reposts: 'repostItem',
   replies: 'replyItem',
   likes: 'likeItem',
 };
 
+/**
+ * Single source of truth for date-filter support — the adapter and the UI both
+ * read it, so neither can drift into hardcoding category names.
+ * Reposts expose the ORIGINAL post's date, not when it was reposted; likes
+ * expose no date at all.
+ */
+export const SUPPORTS_DATE_FILTER: Record<Category, boolean> = {
+  posts: true,
+  reposts: false,
+  replies: true,
+  likes: false,
+};
+
+/** Profile sub-route per category; posts live on the bare profile page. */
+const ROUTE_SUFFIX: Record<Category, string> = {
+  posts: '',
+  reposts: '',
+  replies: '/replies',
+  likes: '/likes',
+};
+
+/** Categories whose feed interleaves reposts and so must be classified per node. */
+const REPOST_AWARE: ReadonlySet<Category> = new Set<Category>(['posts', 'reposts']);
+
 /** Consecutive no-new-item rounds tolerated before giving up (infinite-loop guard). */
 const MAX_NO_PROGRESS = 3;
+
+/** Extract `<handle>` from a bsky.app `/profile/<handle>/...` URL. */
+export function handleFromUrl(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.hostname !== 'bsky.app') return undefined;
+  const segments = parsed.pathname.split('/').filter(Boolean);
+  if (segments[0] !== 'profile') return undefined;
+  return segments[1];
+}
+
+export function routeFor(category: Category, handle: string): string {
+  return `https://bsky.app/profile/${handle}${ROUTE_SUFFIX[category]}`;
+}
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -69,9 +113,29 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
   const rpc = createRpcClient(tabId);
   const resolve = (key: string): Promise<string> => selectorMap.get(SITE, key);
 
+  /** The run is pinned to one tab; the profile it shows tells us whose content to walk. */
+  async function currentHandle(): Promise<string> {
+    const state = await rpc.readState();
+    const handle = handleFromUrl(state.url);
+    if (!handle) {
+      throw new Error(
+        `Open your Bluesky profile page (bsky.app/profile/<handle>) in this tab before deleting — current URL: ${state.url}`,
+      );
+    }
+    return handle;
+  }
+
   async function* enumerate(category: Category, dateFilter: DateFilter): AsyncIterable<Item> {
+    // Each category lives on its own profile route; without this every category
+    // would re-scan whatever tab happened to be showing.
+    await navigateTab(tabId, routeFor(category, await currentHandle()));
+
     const selector = await resolve(ITEM_SELECTOR_KEY[category]);
-    const applyDate = category !== 'likes';
+    const timestampSelector = await resolve('itemTimestamp');
+    const probes = REPOST_AWARE.has(category)
+      ? { isRepost: await resolve('repostIndicator') }
+      : undefined;
+    const applyDate = SUPPORTS_DATE_FILTER[category];
     // Dedupe by content signature, not elementKey: queryItems restamps
     // data-sd-key on every call (global counter), so a re-queried node returns a
     // different elementKey each round. The signature (snippet|url) is stable and
@@ -81,7 +145,7 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     let reachedEnd = false;
 
     while (true) {
-      const nodes = await rpc.queryItems({ selector });
+      const nodes = await rpc.queryItems({ selector, timestampSelector, ...(probes ? { probes } : {}) });
       let newThisRound = 0;
 
       for (const node of nodes) {
@@ -90,6 +154,13 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
         if (yielded.has(signature)) continue;
         yielded.add(signature);
         newThisRound++;
+        // Reposts interleave into the Posts feed but need undo-repost, not
+        // delete — each category takes only its own half of that feed.
+        if (probes) {
+          const isRepost = node.probes?.isRepost === true;
+          if (category === 'posts' && isRepost) continue;
+          if (category === 'reposts' && !isRepost) continue;
+        }
         if (applyDate && !matchesDateFilter(item.timestamp, dateFilter)) continue;
         yield item;
       }
@@ -145,14 +216,33 @@ export function createBlueskyAdapter(tabId: number): SiteAdapter {
     }
   }
 
+  async function undoRepost(item: Item): Promise<DeleteResult> {
+    const repostButton = await resolve('repostButton');
+    const undoMenuItem = await resolve('undoRepostMenuItem');
+    // The repost button opens a dropdown; "Undo repost" lives there. Scope the
+    // button to this item's stamped root, but not the menu — it renders in a portal.
+    try {
+      const opened = await rpc.click({ selector: `${item.elementKey} ${repostButton}` });
+      if (!opened.ok) return { status: 'skipped', reason: opened.reason ?? 'repost button unavailable' };
+
+      const undone = await rpc.click({ selector: undoMenuItem });
+      if (!undone.ok) return { status: 'skipped', reason: undone.reason ?? 'undo repost unavailable' };
+      return { status: 'deleted' };
+    } catch (err) {
+      return { status: 'failed', reason: messageOf(err) };
+    }
+  }
+
   async function deleteItem(item: Item): Promise<DeleteResult> {
-    return item.category === 'likes' ? unlike(item) : deleteViaMenu(item);
+    if (item.category === 'likes') return unlike(item);
+    if (item.category === 'reposts') return undoRepost(item);
+    return deleteViaMenu(item);
   }
 
   return {
     site: SITE,
-    categories: ['posts', 'replies', 'likes'],
-    supportsDateFilter: { posts: true, replies: true, likes: false },
+    categories: ['posts', 'reposts', 'replies', 'likes'],
+    supportsDateFilter: SUPPORTS_DATE_FILTER,
     pacing: DEFAULT_BLUESKY_PACING,
     enumerate,
     deleteItem,

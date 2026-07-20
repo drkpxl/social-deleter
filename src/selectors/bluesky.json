@@ -1,14 +1,18 @@
 {
-  "_note": "BEST-EFFORT selectors for bsky.app, derived from known data-testid attributes. NOT yet verified against the live site — every key must pass the validation gate (docs/03-roadmap.md task 11) before shipping. Timestamp and item-root selectors are the most likely to need correction.",
-  "schemaVersion": 1,
+  "_note": "VERIFIED live against bsky.app: postItem, replyItem, likeItem, menuButton, deleteMenuItem, deleteConfirm (posts deletion works end to end). UNVERIFIED / best-effort: repostIndicator, repostButton, undoRepostMenuItem, repostItem, unlikeButton, itemTimestamp. schemaVersion 2 adds the repost keys and discards stored overrides from v1 by design.",
+  "schemaVersion": 2,
   "selectors": {
     "postItem": "div[data-testid^=\"feedItem\"]",
+    "repostItem": "div[data-testid^=\"feedItem\"]",
     "replyItem": "div[data-testid^=\"feedItem\"]",
     "likeItem": "div[data-testid^=\"feedItem\"]",
     "menuButton": "[data-testid=\"postDropdownBtn\"], [aria-label=\"Open post options menu\"]",
     "deleteMenuItem": "[data-testid=\"postDropdownDeleteBtn\"]",
     "deleteConfirm": "[data-testid=\"confirmBtn\"]",
     "unlikeButton": "[data-testid=\"likeBtn\"]",
+    "repostIndicator": "[data-testid=\"feedItem-repostedBy\"], a[href*=\"/profile/\"][aria-label*=\"Reposted\" i], a[aria-label*=\"Reposted by\" i]",
+    "repostButton": "[data-testid=\"repostBtn\"]",
+    "undoRepostMenuItem": "[data-testid=\"repostDropdownUndoBtn\"], [role=\"menuitem\"][aria-label*=\"Undo repost\" i], [data-testid=\"repostDropdownRepostBtn\"]",
     "itemTimestamp": "a[href*=\"/post/\"] time[datetime], a[data-tooltip] time[datetime], time[datetime]"
   }
 }

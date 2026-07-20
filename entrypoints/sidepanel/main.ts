@@ -6,7 +6,7 @@
  * Delete starts immediately — no confirmation dialog, no dry-run.
  */
 import './style.css';
-import { createBlueskyAdapter } from '@/src/adapters/bluesky';
+import { createBlueskyAdapter, SUPPORTS_DATE_FILTER } from '@/src/adapters/bluesky';
 import { DeletionLog } from '@/src/deletion-log';
 import { createLlmClient, loadLlmConfig, saveLlmConfig } from '@/src/llm-client';
 import { DEFAULT_BLUESKY_PACING, PacingEngine } from '@/src/pacing';
@@ -30,6 +30,7 @@ const TEMPLATE = `
   <fieldset id="categories">
     <legend>What to delete</legend>
     <label><input type="checkbox" id="cat-posts" checked /> Posts</label>
+    <label><input type="checkbox" id="cat-reposts" checked /> Reposts</label>
     <label><input type="checkbox" id="cat-replies" checked /> Replies</label>
     <label><input type="checkbox" id="cat-likes" checked /> Likes</label>
   </fieldset>
@@ -149,18 +150,22 @@ function launch(run: Promise<void>): void {
 function selectedCategories(): Category[] {
   const cats: Category[] = [];
   if (el<HTMLInputElement>('cat-posts').checked) cats.push('posts');
+  if (el<HTMLInputElement>('cat-reposts').checked) cats.push('reposts');
   if (el<HTMLInputElement>('cat-replies').checked) cats.push('replies');
   if (el<HTMLInputElement>('cat-likes').checked) cats.push('likes');
   return cats;
 }
 
-/** Likes views render no timestamps, so a likes-only run cannot be date-filtered. */
-function isLikesOnly(cats: Category[]): boolean {
-  return cats.length === 1 && cats[0] === 'likes';
+/**
+ * Likes render no timestamps and reposts show the original post's date, not the
+ * repost's — a run made only of such categories cannot be date-filtered.
+ */
+function dateFilterUnavailable(cats: Category[]): boolean {
+  return cats.length > 0 && !cats.some((cat) => SUPPORTS_DATE_FILTER[cat]);
 }
 
 function buildDateFilter(): DateFilter {
-  if (isLikesOnly(selectedCategories())) return { mode: 'all' };
+  if (dateFilterUnavailable(selectedCategories())) return { mode: 'all' };
   const mode = el<HTMLSelectElement>('date-mode').value;
   if (mode === 'olderThan') {
     const before = el<HTMLInputElement>('date-before').value;
@@ -275,14 +280,16 @@ function renderProgress(): void {
 function render(): void {
   const cats = selectedCategories();
   const running = runActive();
-  const likesOnly = isLikesOnly(cats);
+  const noDates = dateFilterUnavailable(cats);
   const usable = !!activeTab?.supported && cats.length > 0;
 
   renderTabStatus();
 
   el<HTMLFieldSetElement>('categories').disabled = running;
-  el<HTMLFieldSetElement>('datefilter').disabled = running || likesOnly;
-  el('date-note').textContent = likesOnly ? 'Likes have no timestamps — date filter unavailable.' : '';
+  el<HTMLFieldSetElement>('datefilter').disabled = running || noDates;
+  el('date-note').textContent = noDates
+    ? 'Likes and reposts carry no usable date — date filter unavailable.'
+    : '';
 
   // Paused still allows a fresh Start; Resume sits alongside it as the other path.
   el<HTMLButtonElement>('btn-delete').disabled = !usable || running;
@@ -401,7 +408,7 @@ function updateDateMode(): void {
 }
 
 function wireEvents(): void {
-  for (const id of ['cat-posts', 'cat-replies', 'cat-likes']) {
+  for (const id of ['cat-posts', 'cat-reposts', 'cat-replies', 'cat-likes']) {
     el(id).addEventListener('change', render);
   }
   el('date-mode').addEventListener('change', () => {

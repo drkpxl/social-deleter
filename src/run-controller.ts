@@ -58,6 +58,10 @@ const CLOSE_SELECTORS = [
 /** Plain-language element descriptions for LLM heal prompts, keyed by selector name. */
 const SELECTOR_INTENTS: Record<string, string> = {
   postItem: 'the root container element of a post / feed item',
+  repostItem: 'the root container element of a reposted feed item',
+  repostIndicator: 'the "Reposted by …" label shown above a reposted feed item',
+  repostButton: 'the repost button on a post (opens the repost / undo-repost menu)',
+  undoRepostMenuItem: 'the "Undo repost" item inside the open repost menu',
   replyItem: 'the root container element of a reply feed item',
   likeItem: 'the root container element of a liked post feed item',
   menuButton: "the button that opens a post's options / overflow menu",

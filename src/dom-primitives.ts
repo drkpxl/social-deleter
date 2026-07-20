@@ -42,16 +42,45 @@ function toIso(raw: string): string | undefined {
   return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
 }
 
-function findPermalink(node: Element): string | undefined {
+/** Caller-supplied selectors are best-effort site knowledge; a malformed one must not abort the query. */
+function safeQuery<T extends Element>(node: Element, selector: string): T | null {
+  try {
+    return node.querySelector<T>(selector);
+  } catch {
+    return null;
+  }
+}
+
+/** A caller-supplied selector wins; the generic heuristic stays as fallback. */
+function findPermalink(node: Element, selector?: string): string | undefined {
+  if (selector) {
+    const scoped = safeQuery<HTMLAnchorElement>(node, selector);
+    if (scoped?.href) return scoped.href;
+  }
   const anchors = Array.from(node.querySelectorAll<HTMLAnchorElement>('a[href]'));
   const permalink = anchors.find((a) => PERMALINK_HINTS.some((hint) => a.getAttribute('href')?.includes(hint)));
   return permalink?.href || undefined;
 }
 
-function findTimestamp(node: Element): string | undefined {
-  const timeEl = node.querySelector<HTMLElement>('time[datetime], [datetime]');
-  const raw = timeEl?.getAttribute('datetime');
+function readDatetime(el: Element | null): string | undefined {
+  const raw = el?.getAttribute('datetime');
   return raw ? toIso(raw) : undefined;
+}
+
+function findTimestamp(node: Element, selector?: string): string | undefined {
+  if (selector) {
+    const scoped = readDatetime(safeQuery(node, selector));
+    if (scoped) return scoped;
+  }
+  return readDatetime(node.querySelector('time[datetime], [datetime]'));
+}
+
+function runProbes(node: Element, probes: Record<string, string>): Record<string, boolean> {
+  const result: Record<string, boolean> = {};
+  for (const [name, selector] of Object.entries(probes)) {
+    result[name] = safeQuery(node, selector) !== null;
+  }
+  return result;
 }
 
 export function createDomPrimitives(): DomPrimitives {
@@ -73,7 +102,7 @@ export function createDomPrimitives(): DomPrimitives {
       return { scrolledPx, atEnd };
     },
 
-    async queryItems({ selector }) {
+    async queryItems({ selector, probes, timestampSelector, permalinkSelector }) {
       const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector));
       return nodes.map((node): NodeInfo => {
         // Reuse an existing key so elementKey stays stable across calls — the
@@ -85,10 +114,11 @@ export function createDomPrimitives(): DomPrimitives {
           elementKey: `[data-sd-key="${key}"]`,
           textSnippet: collapse(node.innerText).slice(0, 120),
         };
-        const url = findPermalink(node);
+        const url = findPermalink(node, permalinkSelector);
         if (url) info.url = url;
-        const timestamp = findTimestamp(node);
+        const timestamp = findTimestamp(node, timestampSelector);
         if (timestamp) info.timestamp = timestamp;
+        if (probes) info.probes = runProbes(node, probes);
         return info;
       });
     },

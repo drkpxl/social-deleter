@@ -5,7 +5,7 @@
  */
 
 export type Site = 'bluesky' | 'x' | 'threads';
-export type Category = 'posts' | 'replies' | 'likes';
+export type Category = 'posts' | 'reposts' | 'replies' | 'likes';
 
 export type DateFilter =
   | { mode: 'all' }
@@ -42,6 +42,8 @@ export interface NodeInfo {
   url?: string;
   /** ISO 8601, when the DOM exposes a timestamp. */
   timestamp?: string;
+  /** Result of each requested probe selector: name → did the node contain a match. */
+  probes?: Record<string, boolean>;
 }
 
 export interface PageState {
@@ -61,7 +63,17 @@ export interface PrimitiveResult {
 export interface DomPrimitives {
   ping(): Promise<'pong'>;
   scroll(args: { direction: 'down' | 'up'; amountPx?: number }): Promise<{ scrolledPx: number; atEnd: boolean }>;
-  queryItems(args: { selector: string }): Promise<NodeInfo[]>;
+  /**
+   * `probes` classify each matched node (name → selector evaluated within it).
+   * `timestampSelector`/`permalinkSelector` let the caller supply site knowledge
+   * instead of relying on this arm's generic heuristics.
+   */
+  queryItems(args: {
+    selector: string;
+    probes?: Record<string, string>;
+    timestampSelector?: string;
+    permalinkSelector?: string;
+  }): Promise<NodeInfo[]>;
   /** Poll for `selector`, click it. Used for the likes/unlike toggle (no menu). */
   click(args: { selector: string }): Promise<PrimitiveResult>;
   openMenu(args: { itemSelector: string; menuButtonSelector: string }): Promise<PrimitiveResult>;

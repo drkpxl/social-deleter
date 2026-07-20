@@ -90,6 +90,13 @@ export interface DomPrimitives {
   }): Promise<NodeInfo[]>;
   /** Poll for `selector`, click it. Used for the likes/unlike toggle (no menu). */
   click(args: { selector: string }): Promise<PrimitiveResult>;
+  /**
+   * Poll for elements matching `selector` and click the one whose visible text
+   * matches `text` (exact first, then startsWith; case-insensitive). Required by
+   * sites whose menu items carry no testid/aria-label — Threads' Delete item is
+   * identifiable ONLY by its text.
+   */
+  clickByText(args: { selector: string; text: string }): Promise<PrimitiveResult>;
   openMenu(args: { itemSelector: string; menuButtonSelector: string }): Promise<PrimitiveResult>;
   clickDelete(args: { menuItemSelector: string; confirmSelector?: string }): Promise<PrimitiveResult>;
   /** Return a trimmed outerHTML snapshot around `selector` (or viewport if omitted) for LLM repair. */

@@ -1,0 +1,47 @@
+{
+  "_note": "VERIFIED against live logged-in threads.com by performing one real delete, one reply delete, and one undo-repost: item root [data-pressable-container=\"true\"]; menu via div[role=\"button\"]:has(svg[aria-label=\"More\"]); [role=\"menuitem\"] text \"Delete\"; confirm dialog holds exactly two text-only [role=\"button\"]s (\"Delete\" / \"Cancel\") so EXACT text matching is required; repost menu is \"Remove\"/\"Quote\" with NO confirm dialog; real time[datetime] timestamps. Threads exposes NO data-testid and its class names are per-build obfuscation, so selectors use only role/aria-label/data-pressable-container. Deleted items stay in the DOM until reload. The /replies route interleaves other authors' parent posts with your replies, so the adapter probes a[href=\"/@<handle>\"] for ownership. STILL UNVERIFIED: dismissControls, and sustained-run behaviour under Meta rate limiting.",
+  "schemaVersion": 1,
+  "selectors": {
+    "postItem": {
+      "selector": "[data-pressable-container=\"true\"]",
+      "intent": "the root container element of a post on a Threads profile feed"
+    },
+    "replyItem": {
+      "selector": "[data-pressable-container=\"true\"]",
+      "intent": "the root container element of a reply on the Threads profile /replies route"
+    },
+    "repostItem": {
+      "selector": "[data-pressable-container=\"true\"]",
+      "intent": "the root container element of a reposted thread on the Threads profile /reposts route"
+    },
+    "menuButton": {
+      "selector": "div[role=\"button\"]:has(svg[aria-label=\"More\"])",
+      "intent": "the \"More\" (\u2026) button on a post that opens its options menu \u2014 an SVG with aria-label \"More\" inside a clickable div[role=\"button\"]"
+    },
+    "deleteMenuItem": {
+      "selector": "[role=\"menuitem\"]",
+      "intent": "an item in the open post options menu; the caller text-matches the one whose visible text is \"Delete\" (the items carry no testid or aria-label, only text)"
+    },
+    "deleteConfirm": {
+      "selector": "[role=\"dialog\"] [role=\"button\"]",
+      "intent": "a button in the \"Delete post?\" confirmation dialog; the dialog holds exactly two such buttons, \"Delete\" and \"Cancel\", so the caller text-matches \"Delete\" exactly \u2014 this selector must match BOTH buttons, never be narrowed to one by position",
+      "unique": false
+    },
+    "repostButton": {
+      "selector": "div[role=\"button\"]:has(svg[aria-label=\"Repost\"])",
+      "intent": "the repost button on a post (opens the repost / undo-repost menu) \u2014 an SVG with aria-label \"Repost\" inside a clickable div[role=\"button\"]"
+    },
+    "undoRepostMenuItem": {
+      "selector": "[role=\"menuitem\"]",
+      "intent": "the \"Remove\" entry in the repost menu (VERIFIED: the menu holds exactly \"Remove\" and \"Quote\"; Remove takes effect with no confirmation dialog)"
+    },
+    "itemTimestamp": {
+      "selector": "time[datetime]",
+      "intent": "the element inside a post that carries its date \u2014 on Threads a real <time> whose datetime attribute holds the ISO timestamp"
+    },
+    "dismissControls": {
+      "selector": "div[role=\"button\"]:has(svg[aria-label=\"Close\"]), [aria-label=\"Close\"]",
+      "intent": "the close / dismiss control of a modal dialog, popup or toast (UNVERIFIED on Threads)"
+    }
+  }
+}

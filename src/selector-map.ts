@@ -9,10 +9,12 @@
 import { browser } from 'wxt/browser';
 import type { Site, SelectorEntry, SelectorMapData, SelectorResolver } from './types';
 import blueskySelectors from './selectors/bluesky.json';
+import threadsSelectors from './selectors/threads.json';
 
 /** Shipped maps, statically imported. Sites not yet shipped are absent. */
-const SHIPPED: Partial<Record<Site, SelectorMapData>> = {
+export const SHIPPED: Partial<Record<Site, SelectorMapData>> = {
   bluesky: blueskySelectors as SelectorMapData,
+  threads: threadsSelectors as SelectorMapData,
 };
 
 /** storage.local key holding the override map for a site. */

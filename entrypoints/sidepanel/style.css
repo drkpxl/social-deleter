@@ -84,6 +84,11 @@ legend {
   display: block;
   padding: 3px 0;
 }
+/* The display rule above would otherwise beat the UA's [hidden] rule, and the
+   panel hides categories the active site doesn't offer (Threads has no likes). */
+#categories label[hidden] {
+  display: none;
+}
 #categories input {
   margin-right: 6px;
 }

@@ -7,6 +7,10 @@ export default defineConfig({
     permissions: ['sidePanel', 'storage', 'tabs', 'scripting'],
     host_permissions: [
       'https://bsky.app/*',
+      'https://www.threads.com/*',
+      'https://threads.com/*',
+      'https://www.threads.net/*',
+      'https://threads.net/*',
       // Local LLM endpoints (Ollama / LM Studio)
       'http://localhost:11434/*',
       'http://localhost:1234/*',

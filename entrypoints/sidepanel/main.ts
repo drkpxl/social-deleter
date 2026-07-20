@@ -6,17 +6,24 @@
  * Delete starts immediately — no confirmation dialog, no dry-run.
  */
 import './style.css';
-import { createBlueskyAdapter, SUPPORTS_DATE_FILTER } from '@/src/adapters/bluesky';
+import { siteForUrl, SITES, type SiteRegistration } from '@/src/adapters';
 import { DeletionLog } from '@/src/deletion-log';
 import { createLlmClient, loadLlmConfig, probeChat, saveLlmConfig } from '@/src/llm-client';
-import { DEFAULT_BLUESKY_PACING, PacingEngine } from '@/src/pacing';
 import { RunController } from '@/src/run-controller';
 import { newRunId } from '@/src/run-id';
 import { collectDiagnostics } from '@/src/diagnostics';
-import type { Category, DateFilter, LlmClient, RunConfig, RunEvent, RunStatus } from '@/src/types';
+import type {
+  Category,
+  DateFilter,
+  LlmClient,
+  RunConfig,
+  RunEvent,
+  RunStatus,
+  Site,
+} from '@/src/types';
 
-/** v1 is Bluesky-only; the active tab must be on this host to run. */
-const SUPPORTED_HOST = 'bsky.app';
+/** Sites the panel can drive, for the "open one of these" hint. */
+const SITE_LABELS = SITES.map((s) => s.label).join(' or ');
 /** Keep the panel light — a run's log can grow to thousands of entries. */
 const MAX_ROWS = 200;
 const POLL_MS = 1500;
@@ -30,10 +37,11 @@ const TEMPLATE = `
 
   <fieldset id="categories">
     <legend>What to delete</legend>
-    <label><input type="checkbox" id="cat-posts" checked /> Posts</label>
-    <label><input type="checkbox" id="cat-reposts" checked /> Reposts</label>
-    <label><input type="checkbox" id="cat-replies" checked /> Replies</label>
-    <label><input type="checkbox" id="cat-likes" checked /> Likes</label>
+    <label id="lbl-posts"><input type="checkbox" id="cat-posts" checked /> Posts</label>
+    <label id="lbl-reposts"><input type="checkbox" id="cat-reposts" checked /> Reposts</label>
+    <label id="lbl-replies"><input type="checkbox" id="cat-replies" checked /> Replies</label>
+    <label id="lbl-likes"><input type="checkbox" id="cat-likes" checked /> Likes</label>
+    <p id="cat-note" class="hint"></p>
   </fieldset>
 
   <fieldset id="datefilter">
@@ -93,8 +101,17 @@ const TEMPLATE = `
 interface ActiveTab {
   id: number;
   url: string;
-  supported: boolean;
+  /** The registry row for this tab's host; absent = a site we don't drive. */
+  registration?: SiteRegistration;
 }
+
+/** Every category the UI can show, and the checkbox/label ids that carry it. */
+const CATEGORY_ORDER: Category[] = ['posts', 'reposts', 'replies', 'likes'];
+
+/** Why a category is missing on a given site — shown instead of a silent absence. */
+const CATEGORY_ABSENT_HINT: Partial<Record<Site, Partial<Record<Category, string>>>> = {
+  threads: { likes: 'Threads doesn’t list your liked posts, so they can’t be deleted here.' },
+};
 
 interface LogRow {
   at: string;
@@ -104,7 +121,6 @@ interface LogRow {
 }
 
 const log = new DeletionLog();
-const pacing = new PacingEngine(DEFAULT_BLUESKY_PACING);
 
 let controller: RunController;
 let unsubscribe: (() => void) | null = null;
@@ -126,9 +142,15 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T {
 function buildController(): void {
   unsubscribe?.();
   controller = new RunController({
-    adapterFactory: createBlueskyAdapter,
+    // Resolved at run time from the registry, so the controller always builds the
+    // adapter for whatever site the pinned tab is on. No `pacing` override is
+    // passed: each adapter's own profile must win (Threads runs far slower).
+    adapterFactory: (tabId) => {
+      const registration = activeTab?.registration;
+      if (!registration) throw new Error('No supported site is open in the active tab');
+      return registration.factory(tabId);
+    },
     log,
-    pacing,
     llm: llmClient,
   });
   unsubscribe = controller.onChange((next) => {
@@ -158,21 +180,27 @@ function launch(run: Promise<void>): void {
 // Form state -> RunConfig
 // ---------------------------------------------------------------------------
 
+/** Categories the active site offers; everything else is hidden, never silently ignored. */
+function availableCategories(): Category[] {
+  return activeTab?.registration?.categories ?? CATEGORY_ORDER;
+}
+
 function selectedCategories(): Category[] {
-  const cats: Category[] = [];
-  if (el<HTMLInputElement>('cat-posts').checked) cats.push('posts');
-  if (el<HTMLInputElement>('cat-reposts').checked) cats.push('reposts');
-  if (el<HTMLInputElement>('cat-replies').checked) cats.push('replies');
-  if (el<HTMLInputElement>('cat-likes').checked) cats.push('likes');
-  return cats;
+  const available = availableCategories();
+  return CATEGORY_ORDER.filter(
+    (cat) => available.includes(cat) && el<HTMLInputElement>(`cat-${cat}`).checked,
+  );
 }
 
 /**
- * Likes render no timestamps and reposts show the original post's date, not the
- * repost's — a run made only of such categories cannot be date-filtered.
+ * On Bluesky likes render no timestamps and reposts show the original post's
+ * date, not the repost's — a run made only of such categories cannot be
+ * date-filtered. Which categories those are is per-site registry data.
  */
 function dateFilterUnavailable(cats: Category[]): boolean {
-  return cats.length > 0 && !cats.some((cat) => SUPPORTS_DATE_FILTER[cat]);
+  const supports = activeTab?.registration?.supportsDateFilter;
+  if (!supports) return false;
+  return cats.length > 0 && !cats.some((cat) => supports[cat]);
 }
 
 function buildDateFilter(): DateFilter {
@@ -197,19 +225,18 @@ async function resolveActiveTab(): Promise<void> {
     return;
   }
   const url = tab.url ?? '';
-  let supported = false;
-  try {
-    supported = new URL(url).hostname === SUPPORTED_HOST;
-  } catch {
-    supported = false;
-  }
-  activeTab = { id: tab.id, url, supported };
+  const registration = siteForUrl(url);
+  activeTab = registration ? { id: tab.id, url, registration } : { id: tab.id, url };
+}
+
+function tabSupported(): boolean {
+  return activeTab?.registration !== undefined;
 }
 
 /** The run is pinned to whichever tab is active at click time. */
-function baseConfig(tab: ActiveTab): Omit<RunConfig, 'runId'> {
+function baseConfig(tab: ActiveTab & { registration: SiteRegistration }): Omit<RunConfig, 'runId'> {
   return {
-    site: 'bluesky',
+    site: tab.registration.site,
     categories: selectedCategories(),
     dateFilter: buildDateFilter(),
     tabId: tab.id,
@@ -223,9 +250,13 @@ function baseConfig(tab: ActiveTab): Omit<RunConfig, 'runId'> {
 async function onDelete(): Promise<void> {
   await resolveActiveTab();
   render();
-  if (!activeTab?.supported || selectedCategories().length === 0) return;
+  const tab = activeTab;
+  if (!tab?.registration || selectedCategories().length === 0) return;
 
-  const config: RunConfig = { ...baseConfig(activeTab), runId: newRunId() };
+  const config: RunConfig = {
+    ...baseConfig({ ...tab, registration: tab.registration }),
+    runId: newRunId(),
+  };
   displayRunId = config.runId;
   hasIncompleteRun = true;
   // Outcomes arrive through onChange, not this promise.
@@ -239,22 +270,24 @@ function onStop(): void {
 async function onResume(): Promise<void> {
   await resolveActiveTab();
   render();
-  if (!activeTab?.supported || selectedCategories().length === 0) return;
+  const tab = activeTab;
+  if (!tab?.registration || selectedCategories().length === 0) return;
   // resume() reuses the latest incomplete runId and rebuilds the skip-set from the log.
-  launch(controller.resume(baseConfig(activeTab)));
+  launch(controller.resume(baseConfig({ ...tab, registration: tab.registration })));
 }
 
 /** Dump what the shipped selectors actually match here, for pasting into a bug report. */
 async function onDiagnose(): Promise<void> {
   const note = el('diag-status');
   await resolveActiveTab();
-  if (!activeTab?.supported) {
-    note.textContent = 'Open your bsky.app profile tab first.';
+  const registration = activeTab?.registration;
+  if (!activeTab || !registration) {
+    note.textContent = `Open your ${SITE_LABELS} profile tab first.`;
     return;
   }
   note.textContent = 'Collecting…';
   try {
-    const report = await collectDiagnostics(activeTab.id);
+    const report = await collectDiagnostics(activeTab.id, registration.site);
     console.log(report);
     try {
       await navigator.clipboard.writeText(report);
@@ -277,13 +310,30 @@ function renderTabStatus(): void {
   if (!activeTab) {
     node.textContent = 'No active tab detected.';
     node.className = 'tab-status warn';
-  } else if (!activeTab.supported) {
-    node.textContent = 'Active tab is not bsky.app — open Bluesky in this window to run.';
+  } else if (!activeTab.registration) {
+    node.textContent = `Active tab isn’t a supported site — open ${SITE_LABELS} in this window to run.`;
     node.className = 'tab-status warn';
   } else {
-    node.textContent = 'Ready on bsky.app';
+    node.textContent = `Ready on ${activeTab.registration.label}`;
     node.className = 'tab-status ok';
   }
+}
+
+/** Hide the categories this site can't offer, and say why rather than just dropping them. */
+function renderCategories(): void {
+  const registration = activeTab?.registration;
+  const available = availableCategories();
+  const notes: string[] = [];
+
+  for (const cat of CATEGORY_ORDER) {
+    const supported = available.includes(cat);
+    el(`lbl-${cat}`).hidden = !supported;
+    // Also uncheck it: a hidden-but-checked box would silently widen the run.
+    if (!supported) el<HTMLInputElement>(`cat-${cat}`).checked = false;
+    const hint = supported ? undefined : registration && CATEGORY_ABSENT_HINT[registration.site]?.[cat];
+    if (hint) notes.push(hint);
+  }
+  el('cat-note').textContent = notes.join(' ');
 }
 
 function renderProgress(): void {
@@ -315,17 +365,18 @@ function renderProgress(): void {
 }
 
 function render(): void {
+  renderTabStatus();
+  renderCategories();
+
   const cats = selectedCategories();
   const running = runActive();
   const noDates = dateFilterUnavailable(cats);
-  const usable = !!activeTab?.supported && cats.length > 0;
-
-  renderTabStatus();
+  const usable = tabSupported() && cats.length > 0;
 
   el<HTMLFieldSetElement>('categories').disabled = running;
   el<HTMLFieldSetElement>('datefilter').disabled = running || noDates;
   el('date-note').textContent = noDates
-    ? 'Likes and reposts carry no usable date — date filter unavailable.'
+    ? 'The selected categories carry no usable date on this site — date filter unavailable.'
     : '';
 
   // Paused still allows a fresh Start; Resume sits alongside it as the other path.
@@ -450,8 +501,8 @@ function updateDateMode(): void {
 }
 
 function wireEvents(): void {
-  for (const id of ['cat-posts', 'cat-reposts', 'cat-replies', 'cat-likes']) {
-    el(id).addEventListener('change', render);
+  for (const cat of CATEGORY_ORDER) {
+    el(`cat-${cat}`).addEventListener('change', render);
   }
   el('date-mode').addEventListener('change', () => {
     updateDateMode();

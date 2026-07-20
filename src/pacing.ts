@@ -9,6 +9,19 @@ export const DEFAULT_BLUESKY_PACING: PacingProfile = {
   backoffMaxMs: 5 * 60 * 1000,
 };
 
+/**
+ * Threads is a Meta property and the most automation-hostile of the three
+ * targets, so it runs markedly slower than Bluesky and waits far longer on
+ * backoff before touching the page again.
+ */
+export const DEFAULT_THREADS_PACING: PacingProfile = {
+  minDelayMs: 2500,
+  maxDelayMs: 6000,
+  backoffBaseMs: 10_000,
+  backoffFactor: 2,
+  backoffMaxMs: 10 * 60 * 1000,
+};
+
 /** Named so callers (and Stop handling) can distinguish an aborted sleep from a real failure. */
 export class AbortError extends Error {
   constructor(message = 'Aborted') {

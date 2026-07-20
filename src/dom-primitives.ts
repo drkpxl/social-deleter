@@ -28,6 +28,14 @@ function queryOne(root: ParentNode, selector: string): HTMLElement | null {
   }
 }
 
+function queryAll(root: ParentNode, selector: string): HTMLElement[] {
+  try {
+    return Array.from(root.querySelectorAll<HTMLElement>(selector));
+  } catch {
+    throw new BadSelectorError(`invalid selector: ${selector}`);
+  }
+}
+
 async function pollForElement(selector: string, timeoutMs: number): Promise<HTMLElement | null> {
   let found: HTMLElement | null = null;
   await pollFor(() => {
@@ -197,6 +205,45 @@ export function createDomPrimitives(): DomPrimitives {
       }
       if (!el) return { ok: false, reason: `element not found: ${selector}`, code: 'trigger-missing', failedArg: 'selector' };
       el.click();
+      return { ok: true };
+    },
+
+    async clickByText({ selector, text }): Promise<PrimitiveResult> {
+      const wanted = collapse(text).toLowerCase();
+      // Held in an object, not a `let`: TS keeps the initializer's narrowing
+      // across the poll callback and would type a bare `let` as `null` after it.
+      const found: { seen: string[]; target: HTMLElement | null } = { seen: [], target: null };
+      try {
+        await pollFor(() => {
+          const candidates = queryAll(document, selector);
+          const texts = candidates.map((el) => collapse(el.innerText ?? el.textContent ?? ''));
+          found.seen = texts.filter(Boolean);
+          // Exact wins over startsWith, and the fallback only ever considers
+          // texts that START WITH the wanted one — never a sibling like
+          // "Cancel". Threads' confirm dialog holds two identical-looking
+          // [role="button"] DIVs, "Delete" and "Cancel", so this ordering is what
+          // keeps the confirm click off Cancel rather than document order.
+          const lower = texts.map((t) => t.toLowerCase());
+          const exact = lower.indexOf(wanted);
+          const index = exact >= 0 ? exact : lower.findIndex((t) => t.startsWith(wanted));
+          found.target = index >= 0 ? (candidates[index] ?? null) : null;
+          return found.target !== null;
+        }, 3000);
+      } catch (err) {
+        return badSelector(err, 'selector');
+      }
+      if (!found.target) {
+        // Report what WAS there: a text miss is usually a relabelled item, and
+        // the visible labels are the only way to see that from the panel.
+        const seen = found.seen.length > 0 ? found.seen.map((t) => `"${t}"`).join(', ') : '(none)';
+        return {
+          ok: false,
+          reason: `no element matching "${text}" for ${selector} — visible texts found: ${seen}`,
+          code: 'trigger-missing',
+          failedArg: 'selector',
+        };
+      }
+      found.target.click();
       return { ok: true };
     },
 

@@ -61,6 +61,31 @@ interface SiteAdapter {
 }
 ```
 
+### Site registry — the wiring seam
+
+`src/adapters/index.ts` holds one `SiteRegistration` row per site: `site`, matching `hosts`,
+a display `label`, the built `contentScript` bundle, the adapter `factory`, the `categories`
+that site actually offers, and its `supportsDateFilter` map. Everything that used to be
+scattered resolves from that row — the panel's supported-host check (`siteForUrl(tab.url)`),
+the `RunConfig.site`, the `adapterFactory` handed to the RunController, the file the RPC
+client injects on demand, and the shipped selector map diagnostics dumps. Adding a site is
+one row plus its selectors JSON, adapter and content-script entrypoint.
+
+### Sites do not share a navigation model
+
+- **Bluesky:** profile tabs are **client-side state** — the URL never changes and
+  `/replies`, `/likes` are 404s — so a category is reached by *clicking the tab* and
+  waiting for the feed to re-render.
+- **Threads:** profile categories are **real routes** (`/@handle`, `/@handle/replies`,
+  `/@handle/reposts`), so the adapter navigates the tab; there is no tab control at all,
+  and no known "not found" marker to assert against (an unknown route just enumerates 0
+  items, which the controller's `suspicious` path reports).
+
+The adapter owns this difference entirely; the primitives and the controller stay
+site-agnostic. Threads also ships no `data-testid` and mangles its class names per build,
+which is why the `clickByText` primitive exists: its delete menu item and its confirm-dialog
+buttons are identifiable only by their visible text.
+
 `enumerate` is a panel-side async generator that calls DOM primitives (`scroll`, `queryItems`) over the messaging port and yields `Item`s. Iteration state lives in the generator closure — it survives tab reloads because the generator is in the panel, not the content script.
 
 ### Date filter

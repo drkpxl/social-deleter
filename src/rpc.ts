@@ -1,20 +1,25 @@
 import { browser } from 'wxt/browser';
+import type { ScriptPublicPath } from 'wxt/utils/inject-script';
 import { RPC_UNREACHABLE_PREFIX, messageOf } from './errors';
 import type { DomPrimitives, RpcRequest, RpcResponse } from './types';
 
 let nextId = 1;
 
-/** Built content-script bundle, injected on demand when the declarative one is absent. */
-const CONTENT_SCRIPT_FILE = '/content-scripts/bluesky.js';
+/**
+ * Fallback bundle for callers that predate the site registry. The primitives are
+ * site-agnostic, but the bundle's own `matches` gate the injection, so injecting
+ * the wrong site's file simply fails — callers should pass their site's file.
+ */
+const DEFAULT_CONTENT_SCRIPT_FILE: ScriptPublicPath = '/content-scripts/bluesky.js';
 
 /**
  * Declarative content scripts only inject at page load, so a tab that was already
  * open when the extension was installed (or reloaded) has none. Inject it on
  * demand and let the caller retry once.
  */
-async function injectContentScript(tabId: number): Promise<boolean> {
+async function injectContentScript(tabId: number, file: ScriptPublicPath): Promise<boolean> {
   try {
-    await browser.scripting.executeScript({ target: { tabId }, files: [CONTENT_SCRIPT_FILE] });
+    await browser.scripting.executeScript({ target: { tabId }, files: [file] });
     return true;
   } catch {
     return false;
@@ -27,7 +32,10 @@ function isRpcRequest(value: unknown): value is RpcRequest {
   return typeof v.id === 'number' && typeof v.method === 'string';
 }
 
-export function createRpcClient(tabId: number): DomPrimitives {
+export function createRpcClient(
+  tabId: number,
+  contentScript: ScriptPublicPath = DEFAULT_CONTENT_SCRIPT_FILE,
+): DomPrimitives {
   const send = async (request: RpcRequest): Promise<RpcResponse | undefined> =>
     (await browser.tabs.sendMessage(tabId, request)) as RpcResponse | undefined;
 
@@ -54,7 +62,7 @@ export function createRpcClient(tabId: number): DomPrimitives {
     if (first) return settle(first);
 
     // No listener on the other end: the script is missing, not the tab. Inject and retry once.
-    if (!(await injectContentScript(tabId))) throw unreachable(failure);
+    if (!(await injectContentScript(tabId, contentScript))) throw unreachable(failure);
     let retried: RpcResponse | undefined;
     try {
       retried = await send({ ...request, id: nextId++ });

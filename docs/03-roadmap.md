@@ -32,10 +32,31 @@ Build the entire skeleton against the friendliest target. Tasks are ordered for 
 
 **Done when:** a sustained multi-hour run on a real account completes without account flags, with backoff observed under rate limiting.
 
-## Phase 3 — Threads
+## Phase 3 — Threads — implemented, pending live verification
 
-- Adapter port; expect Meta fingerprinting and aggressive lazy-loading DOM.
-- Reuse everything from Phases 1–2; this phase should be mostly selector work.
+Shipped (built ahead of Phase 2, since Threads' DOM was inspectable): site registry
+(`src/adapters/index.ts`), `src/adapters/threads.ts`, `src/selectors/threads.json`,
+`entrypoints/threads.content.ts`, `clickByText` primitive, `DEFAULT_THREADS_PACING`.
+
+Threads specifics that shaped the port:
+
+- **No `data-testid` anywhere** and obfuscated per-build class names, so selectors use only
+  `role` / `aria-label` / `data-pressable-container`, and the delete + undo-repost menu items
+  are reached by **visible text** (`clickByText`) because nothing else identifies them.
+- **Categories are real routes** (`/@handle`, `/@handle/replies`, `/@handle/reposts`) — the
+  adapter navigates instead of clicking tabs.
+- **No Likes** — Threads doesn't list liked posts, so the category is absent from the site's
+  registration and hidden in the panel.
+- **Deleted posts stay in the DOM until reload**, so a successful click sequence is the only
+  success signal; the skip-set absorbs the re-encounters.
+- Slower pacing (2.5–6s per action, 10s backoff base, 10min cap) for Meta's automation defences.
+
+Verified on a live account: item root, permalink, `time[datetime]`, `More` menu, the `Delete`
+menu item, the `Delete post?` confirm dialog (two text-only buttons), and one real deletion.
+
+**Still to verify:** the undo-repost menu label (`undoRepostMenuItem` — "Remove"/"Unrepost"),
+`dismissControls`, a multi-hour sustained run (backoff behaviour under Meta rate limiting),
+replies/reposts routes at scale, and resume across a Threads run.
 
 **Done when:** parity with Phase 2 criteria on Threads.
 
